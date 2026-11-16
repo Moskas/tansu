@@ -14,7 +14,7 @@ use crate::config::Theme;
 use crate::fs::meta::human_size;
 use crate::fs::{Entry, EntryKind};
 use crate::nav::passive_offset;
-use crate::preview::Preview;
+use crate::preview::{Preview, SpanStyle, TermColor, metadata_lines};
 use crate::vcs::{FileStatus, Mark, RemoteStatus};
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &App) {
@@ -103,6 +103,13 @@ fn render_preview(buf: &mut Buffer, area: Rect, app: &App) {
     return;
   };
   let theme = &app.config.theme;
+  if app.show_metadata
+    && let Some(entry) = app
+      .selected()
+      .filter(|e| !e.is_dir() && e.path == slot.path)
+  {
+    return draw_metadata(buf, area, &metadata_rows(entry, &slot.status), theme);
+  }
   let preview = match &slot.status {
     PreviewStatus::Loading => return,
     // The full error is already in the status line.
@@ -137,25 +144,105 @@ fn render_preview(buf: &mut Buffer, area: Rect, app: &App) {
         .unwrap_or(0);
       draw_list(buf, area, &listing.path, &entries, Some(selected), app);
     }
-    Preview::Metadata(rows) => {
-      let key_w = rows
-        .iter()
-        .map(|(k, _)| display_width(k))
-        .max()
-        .unwrap_or(0);
-      let key_style = Style::new().fg(theme.dim.0);
-      let val_style = Style::new().fg(theme.fg.0);
-      for (row, (key, value)) in rows.iter().take(area.height as usize).enumerate() {
+    Preview::Highlighted { lines, .. } => {
+      for (row, line) in lines.iter().take(area.height as usize).enumerate() {
         let y = area.y + row as u16;
-        let (x, _) = buf.set_stringn(area.x, y, key, area.width as usize, key_style);
-        let used = (x - area.x) as usize + (key_w - display_width(key)) + 2;
-        if used < area.width as usize {
-          let room = area.width as usize - used;
-          buf.set_stringn(area.x + used as u16, y, value, room, val_style);
+        let mut x = area.x;
+        for span in line {
+          if x >= area.right() {
+            break;
+          }
+          let room = (area.right() - x) as usize;
+          (x, _) = buf.set_stringn(x, y, &span.text, room, span_style(span.style, theme));
         }
       }
     }
+    Preview::Image(image) => match &slot.image {
+      Some(encoded) => encoded.render(area, buf),
+      // No graphics support (or encoding failed): describe the image instead.
+      None => draw_metadata(
+        buf,
+        area,
+        &[(
+          "Image".to_string(),
+          format!("{}x{}", image.width, image.height),
+        )],
+        theme,
+      ),
+    },
+    Preview::Metadata(rows) => draw_metadata(buf, area, rows, theme),
   }
+}
+
+/// Metadata for the metadata view, refined by what the content preview found out: the file
+/// type, and the dimensions of images.
+fn metadata_rows(entry: &Entry, status: &PreviewStatus) -> Vec<(String, String)> {
+  let content = match status {
+    PreviewStatus::Ready(p) => Some(&**p),
+    _ => None,
+  };
+  let label = match content {
+    Some(Preview::Text { .. } | Preview::Highlighted { .. }) if !entry.is_executable() => {
+      Some("text file")
+    }
+    Some(Preview::Image(_)) => Some("image"),
+    _ => None,
+  };
+  let mut rows = metadata_lines(entry, label);
+  if let Some(Preview::Image(image)) = content {
+    rows.insert(
+      2,
+      (
+        "Dimensions".to_string(),
+        format!("{}x{}", image.width, image.height),
+      ),
+    );
+  }
+  rows
+}
+
+fn draw_metadata(buf: &mut Buffer, area: Rect, rows: &[(String, String)], theme: &Theme) {
+  let key_w = rows
+    .iter()
+    .map(|(k, _)| display_width(k))
+    .max()
+    .unwrap_or(0);
+  let key_style = Style::new().fg(theme.dim.0);
+  let val_style = Style::new().fg(theme.fg.0);
+  for (row, (key, value)) in rows.iter().take(area.height as usize).enumerate() {
+    let y = area.y + row as u16;
+    let (x, _) = buf.set_stringn(area.x, y, key, area.width as usize, key_style);
+    let used = (x - area.x) as usize + (key_w - display_width(key)) + 2;
+    if used < area.width as usize {
+      let room = area.width as usize - used;
+      buf.set_stringn(area.x + used as u16, y, value, room, val_style);
+    }
+  }
+}
+
+/// Converts a highlighter style; the default foreground is the theme's.
+fn span_style(s: SpanStyle, theme: &Theme) -> Style {
+  let color = |c: TermColor| match c {
+    TermColor::Default => None,
+    TermColor::Indexed(n) => Some(Color::Indexed(n)),
+    TermColor::Rgb(r, g, b) => Some(Color::Rgb(r, g, b)),
+  };
+  let mut style = Style::new().fg(color(s.fg).unwrap_or(theme.fg.0));
+  if let Some(bg) = color(s.bg) {
+    style = style.bg(bg);
+  }
+  let modifiers = [
+    (s.bold, Modifier::BOLD),
+    (s.dim, Modifier::DIM),
+    (s.italic, Modifier::ITALIC),
+    (s.underline, Modifier::UNDERLINED),
+  ];
+  for (on, m) in modifiers {
+    if on {
+      style = style.add_modifier(m);
+    }
+  }
+  style
 }
 
 /// Ranger's info string: ` 15` for directories, ` 407 B` for files, `->` prefixed for

@@ -5,6 +5,7 @@ pub mod app;
 pub mod config;
 pub mod event;
 pub mod fs;
+pub mod graphics;
 pub mod keymap;
 pub mod nav;
 pub mod opener;

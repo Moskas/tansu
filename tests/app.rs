@@ -65,14 +65,17 @@ fn new_app(start: &Path) -> App {
 
 /// Runs queued commands (and the commands their results trigger) until idle.
 fn pump(app: &mut App) {
-  let registry = PreviewRegistry::with_defaults();
+  pump_with(app, &PreviewRegistry::with_defaults());
+}
+
+fn pump_with(app: &mut App, registry: &PreviewRegistry) {
   for _ in 0..100 {
     let cmds = app.take_commands();
     if cmds.is_empty() {
       return;
     }
     for cmd in cmds {
-      for ev in execute_sync(cmd, &registry, app.config.preview) {
+      for ev in execute_sync(cmd, registry, app.config.preview) {
         app.handle_event(ev);
       }
     }
@@ -300,6 +303,7 @@ fn stale_preview_results_are_ignored() {
       lines: vec!["stale".into()],
       truncated: false,
     }),
+    image: None,
   });
   assert!(matches!(
     app.preview.as_ref().unwrap().status,
@@ -588,4 +592,62 @@ fn resize_reflows_layout() {
     app.set_size(w, h);
     t.draw(|f| tansu::ui::render(f, &app)).unwrap();
   }
+}
+
+#[test]
+fn resizing_re_requests_image_previews_only() {
+  let tmp = tempfile::tempdir().unwrap();
+  image::RgbImage::new(8, 8)
+    .save(tmp.path().join("a.png"))
+    .unwrap();
+  fs::write(tmp.path().join("b.txt"), "text\n").unwrap();
+  let registry = PreviewRegistry::configured(&tansu::preview::HighlightConfig::default(), true);
+  let mut app = new_app(tmp.path());
+  // The first preview ran without the image previewer; reload with it.
+  app.dispatch(tansu::action::Action::Reload);
+  pump_with(&mut app, &registry);
+  assert_eq!(selected(&app), "a.png");
+  assert!(matches!(
+    &app.preview.as_ref().unwrap().status,
+    PreviewStatus::Ready(p) if matches!(**p, Preview::Image(_))
+  ));
+
+  app.set_size(WIDTH + 20, HEIGHT);
+  let cells = app.preview_cells();
+  assert!(matches!(
+    app.take_commands().as_slice(),
+    [Command::Preview { cells: c, .. }] if *c == cells
+  ));
+  pump_with(&mut app, &registry);
+
+  app.dispatch(tansu::action::Action::MoveDown);
+  pump_with(&mut app, &registry);
+  assert_eq!(selected(&app), "b.txt");
+  app.set_size(WIDTH, HEIGHT);
+  assert_eq!(app.take_commands(), vec![]);
+}
+
+#[test]
+fn metadata_toggle_replaces_file_previews_but_not_directory_listings() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  let screen = |app: &App| render_sized(app, 100, HEIGHT).join("\n");
+
+  press(&mut app, "jjjj");
+  assert_eq!(selected(&app), "file10.txt");
+  assert!(screen(&app).contains("hello"));
+
+  press(&mut app, "i");
+  assert!(app.show_metadata);
+  let shown = screen(&app);
+  assert!(shown.contains("text file"), "{shown}");
+  assert!(!shown.contains("hello"));
+
+  // The mode sticks while moving; directories still list their contents.
+  press(&mut app, "gg");
+  assert_eq!(selected(&app), "alpha");
+  assert!(screen(&app).contains("a.txt"));
+
+  press(&mut app, "Gi");
+  assert!(!app.show_metadata);
 }

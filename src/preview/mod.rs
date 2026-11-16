@@ -1,7 +1,10 @@
 //! Preview generation. Previewers are tried in priority order; the first one that can handle
 //! an entry and produces content wins. Free of UI types: previews are plain data.
 
+pub mod ansi;
 mod directory;
+pub mod highlight;
+mod image;
 mod metadata;
 mod text;
 
@@ -12,13 +15,25 @@ use serde::Deserialize;
 
 use crate::fs::{DirListing, Entry};
 
+pub use ansi::{SpanStyle, StyledLine, StyledSpan, TermColor};
 pub use directory::DirectoryPreviewer;
+pub use highlight::{HighlightConfig, Highlighter};
+pub use image::{ImagePreviewer, PreviewImage};
 pub use metadata::{MetadataPreviewer, metadata_lines};
 pub use text::{TextPreviewer, looks_binary};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Preview {
-  Text { lines: Vec<String>, truncated: bool },
+  Text {
+    lines: Vec<String>,
+    truncated: bool,
+  },
+  /// Syntax highlighted text.
+  Highlighted {
+    lines: Vec<StyledLine>,
+    truncated: bool,
+  },
+  Image(PreviewImage),
   Directory(Arc<DirListing>),
   Metadata(Vec<(String, String)>),
 }
@@ -98,7 +113,25 @@ impl PreviewRegistry {
   pub fn with_defaults() -> Self {
     let mut r = Self::new();
     r.register(100, Box::new(DirectoryPreviewer));
-    r.register(50, Box::new(TextPreviewer));
+    r.register(50, Box::new(TextPreviewer::default()));
+    r.register(0, Box::new(MetadataPreviewer));
+    r
+  }
+
+  /// The defaults plus syntax highlighting (when enabled) and, when `images` is set, an
+  /// image previewer ahead of text.
+  pub fn configured(highlight: &HighlightConfig, images: bool) -> Self {
+    let mut r = Self::new();
+    r.register(100, Box::new(DirectoryPreviewer));
+    if images {
+      r.register(75, Box::new(ImagePreviewer));
+    }
+    let text = if highlight.enabled {
+      TextPreviewer::with_highlighter(Highlighter::new(highlight.clone()))
+    } else {
+      TextPreviewer::default()
+    };
+    r.register(50, Box::new(text));
     r.register(0, Box::new(MetadataPreviewer));
     r
   }

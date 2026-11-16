@@ -6,6 +6,7 @@ use std::thread;
 use crossterm::event::{self as ct, KeyEvent};
 
 use crate::fs::{DirCount, DirListing};
+use crate::graphics::EncodedImage;
 use crate::preview::Preview;
 use crate::vcs::{DirVcs, RepoStatus};
 
@@ -25,6 +26,8 @@ pub enum Event {
     id: u64,
     path: PathBuf,
     result: Result<Preview, String>,
+    /// The image of an image preview, encoded for the preview column.
+    image: Option<EncodedImage>,
   },
   Counts(Vec<(PathBuf, DirCount)>),
   /// VCS status for the entries of `dir`, plus the repositories involved.

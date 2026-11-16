@@ -505,3 +505,67 @@ fn head_commit_parsing() {
   );
   assert!(parse_head(b"").is_none());
 }
+
+// ---- ANSI parsing ----
+
+use tansu::preview::ansi::{SpanStyle, StyledSpan, TermColor, parse as parse_ansi};
+
+fn span(text: &str, style: SpanStyle) -> StyledSpan {
+  StyledSpan {
+    style,
+    text: text.to_string(),
+  }
+}
+
+#[test]
+fn ansi_colors_and_attributes_become_spans() {
+  let lines = parse_ansi("\x1b[1;31mfn\x1b[0m main\x1b[38;5;208m(\x1b[38;2;1;2;3m)\x1b[39m\n");
+  let red_bold = SpanStyle {
+    fg: TermColor::Indexed(1),
+    bold: true,
+    ..SpanStyle::default()
+  };
+  let indexed = SpanStyle {
+    fg: TermColor::Indexed(208),
+    ..SpanStyle::default()
+  };
+  let rgb = SpanStyle {
+    fg: TermColor::Rgb(1, 2, 3),
+    ..SpanStyle::default()
+  };
+  assert_eq!(
+    lines,
+    vec![vec![
+      span("fn", red_bold),
+      span(" main", SpanStyle::default()),
+      span("(", indexed),
+      span(")", rgb),
+    ]]
+  );
+}
+
+#[test]
+fn ansi_styles_carry_across_lines_and_bright_colors_map_high() {
+  let lines = parse_ansi("\x1b[92ma\nb\x1b[0m\nc");
+  let green = SpanStyle {
+    fg: TermColor::Indexed(10),
+    ..SpanStyle::default()
+  };
+  assert_eq!(
+    lines,
+    vec![
+      vec![span("a", green)],
+      vec![span("b", green)],
+      vec![span("c", SpanStyle::default())],
+    ]
+  );
+}
+
+#[test]
+fn non_sgr_escapes_and_control_characters_are_neutralized() {
+  // Cursor movement, a screen clear, an OSC title and a bell must not reach the terminal.
+  let lines = parse_ansi("a\x1b[2J\x1b[Hb\x1b]0;title\x07c\x1b]8;;x\x1b\\d\x07\te\r");
+  let text: String = lines[0].iter().map(|s| s.text.as_str()).collect();
+  assert_eq!(text, "abcd?   e");
+  assert!(!text.contains('\x1b'));
+}

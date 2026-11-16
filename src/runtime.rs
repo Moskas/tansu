@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 use crate::app::Command;
 use crate::event::Event;
 use crate::fs::{DirCount, Entry, count_entries, list_dir};
-use crate::preview::{PreviewContext, PreviewError, PreviewLimits, PreviewRegistry};
+use crate::graphics::ImageEncoder;
+use crate::preview::{Preview, PreviewContext, PreviewError, PreviewLimits, PreviewRegistry};
 use crate::vcs::{self, DirVcs, GitError, RepoStatus, VcsRequest};
 use crate::worker::{CancelToken, LatestWorker};
 
@@ -33,12 +34,15 @@ pub fn load_dir(path: &Path) -> Event {
   }
 }
 
-/// Runs the registry for one entry. Returns `None` if the job was cancelled.
+/// Runs the registry for one entry and, for images, encodes the result for `cells` when an
+/// encoder is available. Returns `None` if the job was cancelled.
 pub fn run_preview(
   registry: &PreviewRegistry,
   limits: PreviewLimits,
+  encoder: Option<&ImageEncoder>,
   id: u64,
   entry: &Entry,
+  cells: Option<(u16, u16)>,
   token: &CancelToken,
 ) -> Option<Event> {
   let cancelled = || token.is_cancelled();
@@ -46,14 +50,29 @@ pub fn run_preview(
     limits,
     cancelled: &cancelled,
   };
-  let result = match registry.preview(entry, &ctx) {
+  let mut result = match registry.preview(entry, &ctx) {
     Err(PreviewError::Cancelled) => return None,
     r => r.map_err(|e| e.to_string()),
+  };
+  let image = match (&mut result, encoder, cells) {
+    (Ok(Preview::Image(img)), Some(encoder), Some(cells)) => {
+      let encoded = encoder.encode(&img.image, cells);
+      if token.is_cancelled() {
+        return None;
+      }
+      encoded.map(|(encoded, scaled)| {
+        // Only the scaled copy is cached, not the full-resolution decode.
+        img.image = Arc::new(scaled);
+        encoded
+      })
+    }
+    _ => None,
   };
   Some(Event::PreviewReady {
     id,
     path: entry.path.clone(),
     result,
+    image,
   })
 }
 
@@ -173,27 +192,33 @@ fn spawn_vcs_worker(tx: Sender<Event>) -> Sender<VcsRequest> {
   req_tx
 }
 
+/// A preview request: the job id, the entry, and the preview column size.
+type PreviewJob = (u64, Entry, Option<(u16, u16)>);
+
 /// Background execution: one thread per directory listing, latest-wins workers for
 /// previews and item counts so stale work is dropped as the cursor moves, and an ordered
 /// worker for VCS status.
 pub struct Runtime {
   tx: Sender<Event>,
-  previews: LatestWorker<(u64, Entry)>,
+  previews: LatestWorker<PreviewJob>,
   counts: LatestWorker<Vec<PathBuf>>,
   vcs: Sender<VcsRequest>,
   opener: String,
 }
 
 impl Runtime {
+  /// `images` encodes image previews for the terminal; without it they are not drawn.
   pub fn new(
     tx: Sender<Event>,
     registry: Arc<PreviewRegistry>,
     limits: PreviewLimits,
+    images: Option<ImageEncoder>,
     opener: String,
   ) -> Self {
     let ptx = tx.clone();
-    let previews = LatestWorker::spawn("preview", move |(id, entry): (u64, Entry), token| {
-      if let Some(ev) = run_preview(&registry, limits, id, &entry, token) {
+    let previews = LatestWorker::spawn("preview", move |(id, entry, cells): PreviewJob, token| {
+      let encoder = images.as_ref();
+      if let Some(ev) = run_preview(&registry, limits, encoder, id, &entry, cells, token) {
         let _ = ptx.send(ev);
       }
     });
@@ -225,7 +250,7 @@ impl Runtime {
           return Some(format!("could not start listing: {e}"));
         }
       }
-      Command::Preview { id, entry } => self.previews.submit((id, entry)),
+      Command::Preview { id, entry, cells } => self.previews.submit((id, entry, cells)),
       Command::CancelPreview => self.previews.cancel(),
       Command::CountDirs(dirs) => self.counts.submit(dirs),
       Command::VcsScan(req) => {
@@ -246,9 +271,11 @@ pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLim
   let token = CancelToken::never();
   match cmd {
     Command::LoadDir(path) => vec![load_dir(&path)],
-    Command::Preview { id, entry } => run_preview(registry, limits, id, &entry, &token)
-      .into_iter()
-      .collect(),
+    Command::Preview { id, entry, cells } => {
+      run_preview(registry, limits, None, id, &entry, cells, &token)
+        .into_iter()
+        .collect()
+    }
     Command::CountDirs(dirs) => {
       let mut out = Vec::new();
       run_counts(&dirs, &token, &mut |ev| out.push(ev));

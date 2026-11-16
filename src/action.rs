@@ -17,13 +17,14 @@ pub enum Action {
   Open,
   GoHome,
   ToggleHidden,
+  ToggleMetadata,
   Reload,
   ToggleHelp,
   Quit,
 }
 
 impl Action {
-  pub const ALL: [Action; 15] = [
+  pub const ALL: [Action; 16] = [
     Action::MoveUp,
     Action::MoveDown,
     Action::MoveTop,
@@ -36,6 +37,7 @@ impl Action {
     Action::Open,
     Action::GoHome,
     Action::ToggleHidden,
+    Action::ToggleMetadata,
     Action::Reload,
     Action::ToggleHelp,
     Action::Quit,
@@ -56,6 +58,7 @@ impl Action {
       Action::Open => "open",
       Action::GoHome => "go_home",
       Action::ToggleHidden => "toggle_hidden",
+      Action::ToggleMetadata => "toggle_metadata",
       Action::Reload => "reload",
       Action::ToggleHelp => "toggle_help",
       Action::Quit => "quit",
@@ -76,6 +79,7 @@ impl Action {
       Action::Open => "Enter directory / open file",
       Action::GoHome => "Go to home directory",
       Action::ToggleHidden => "Toggle hidden files",
+      Action::ToggleMetadata => "Toggle file metadata / preview",
       Action::Reload => "Reload directory",
       Action::ToggleHelp => "Toggle this help",
       Action::Quit => "Quit",

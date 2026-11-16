@@ -1,14 +1,27 @@
 use std::fs::File;
 use std::io::Read;
 
+use super::highlight::Highlighter;
 use super::{Preview, PreviewContext, PreviewError, Previewer};
 use crate::fs::{Entry, EntryKind};
 
-const TAB_WIDTH: usize = 4;
+pub(super) const TAB_WIDTH: usize = 4;
 const CHUNK: usize = 8 * 1024;
 
-/// Shows the first lines of regular files that look like text. Declines binary content.
-pub struct TextPreviewer;
+/// Shows the first lines of regular files that look like text, syntax highlighted when a
+/// highlighter is set and works. Declines binary content.
+#[derive(Default)]
+pub struct TextPreviewer {
+  highlighter: Option<Highlighter>,
+}
+
+impl TextPreviewer {
+  pub fn with_highlighter(highlighter: Highlighter) -> Self {
+    TextPreviewer {
+      highlighter: Some(highlighter),
+    }
+  }
+}
 
 impl Previewer for TextPreviewer {
   fn name(&self) -> &str {
@@ -42,19 +55,31 @@ impl Previewer for TextPreviewer {
     let byte_capped =
       data.len() as u64 >= ctx.limits.max_bytes as u64 && entry.size > data.len() as u64;
     let text = decode(&data);
-    let mut lines = Vec::new();
+    let mut raw = Vec::new();
     let mut truncated = byte_capped;
     for line in text.split('\n') {
-      if lines.len() >= ctx.limits.max_lines {
+      if raw.len() >= ctx.limits.max_lines {
         truncated = true;
         break;
       }
-      lines.push(clean_line(line));
+      raw.push(line);
     }
     // A trailing newline produces one empty final element that is not a real line.
     if text.ends_with('\n') && !truncated {
-      lines.pop();
+      raw.pop();
     }
+    if let Some(highlighter) = &self.highlighter
+      && !raw.is_empty()
+    {
+      // Only the lines that are kept get highlighted.
+      let mut input = raw.join("\n");
+      input.push('\n');
+      if let Some(mut lines) = highlighter.highlight(&entry.name, &input, ctx.cancelled)? {
+        lines.truncate(raw.len());
+        return Ok(Some(Preview::Highlighted { lines, truncated }));
+      }
+    }
+    let lines = raw.into_iter().map(clean_line).collect();
     Ok(Some(Preview::Text { lines, truncated }))
   }
 }

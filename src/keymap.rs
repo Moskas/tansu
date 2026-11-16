@@ -238,6 +238,7 @@ pub const DEFAULT_BINDINGS: &[(&str, Action)] = &[
   ("<PageUp>", Action::PageUp),
   ("~", Action::GoHome),
   (".", Action::ToggleHidden),
+  ("i", Action::ToggleMetadata),
   ("r", Action::Reload),
   ("?", Action::ToggleHelp),
   ("q", Action::Quit),

@@ -11,12 +11,14 @@ use crate::action::Action;
 use crate::config::Config;
 use crate::event::Event;
 use crate::fs::{DirCount, DirListing, Entry};
+use crate::graphics::EncodedImage;
 use crate::keymap::{Key, KeyResult, Keymap};
 use crate::nav::{Cursor, ScrollPos};
 use crate::preview::Preview;
 use crate::vcs::{DirVcs, FileStatus, Mark, RepoStatus, VcsRequest};
 
 const PREVIEW_CACHE_LIMIT: usize = 128;
+const IMAGE_CACHE_LIMIT: usize = 8;
 const INFO_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// Side effects requested by the app.
@@ -26,6 +28,8 @@ pub enum Command {
   Preview {
     id: u64,
     entry: Entry,
+    /// Size of the preview column (columns, rows), for encoding images.
+    cells: Option<(u16, u16)>,
   },
   /// The pending preview is no longer wanted.
   CancelPreview,
@@ -53,7 +57,30 @@ pub enum PreviewStatus {
 pub struct PreviewSlot {
   pub path: PathBuf,
   stamp: (i64, u64),
+  /// Preview column size the content was requested for.
+  cells: Option<(u16, u16)>,
   pub status: PreviewStatus,
+  /// The encoded image of an image preview; `None` when it could not be encoded.
+  pub image: Option<Arc<EncodedImage>>,
+}
+
+impl PreviewSlot {
+  /// Whether the content depends on the preview size and was made for a different one.
+  fn stale_size(&self, cells: Option<(u16, u16)>) -> bool {
+    let sized = match &self.status {
+      PreviewStatus::Loading => true,
+      PreviewStatus::Ready(p) => matches!(**p, Preview::Image(_)),
+      PreviewStatus::Failed(_) => false,
+    };
+    sized && self.cells != cells
+  }
+}
+
+struct CachedPreview {
+  stamp: (i64, u64),
+  cells: Option<(u16, u16)>,
+  content: Arc<Preview>,
+  image: Option<Arc<EncodedImage>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +107,8 @@ pub struct App {
   pub cwd: PathBuf,
   pub show_hidden: bool,
   pub show_help: bool,
+  /// Show file metadata instead of the content preview (directories keep their listing).
+  pub show_metadata: bool,
   pub should_quit: bool,
   pub message: Option<Message>,
   pub preview: Option<PreviewSlot>,
@@ -92,8 +121,9 @@ pub struct App {
   /// Selected entry name per directory, restored when coming back.
   remembered: HashMap<PathBuf, String>,
   rows: usize,
+  width: u16,
   pending_dirs: HashSet<PathBuf>,
-  preview_cache: HashMap<PathBuf, ((i64, u64), Arc<Preview>)>,
+  preview_cache: HashMap<PathBuf, CachedPreview>,
   next_preview_id: u64,
   pending_preview: Option<u64>,
   /// VCS context per listed directory, and repository status per root.
@@ -123,6 +153,7 @@ impl App {
       home,
       cwd: start.clone(),
       show_help: false,
+      show_metadata: false,
       should_quit: false,
       message: None,
       preview: None,
@@ -133,6 +164,7 @@ impl App {
       visible_file_bytes: 0,
       remembered: HashMap::new(),
       rows: 0,
+      width: 0,
       pending_dirs: HashSet::new(),
       preview_cache: HashMap::new(),
       next_preview_id: 0,
@@ -278,7 +310,12 @@ impl App {
       Event::Resize(w, h) => self.set_size(w, h),
       Event::Tick => self.tick(),
       Event::DirLoaded { path, result } => self.on_dir_loaded(path, result),
-      Event::PreviewReady { id, path, result } => self.on_preview(id, path, result),
+      Event::PreviewReady {
+        id,
+        path,
+        result,
+        image,
+      } => self.on_preview(id, path, result, image),
       Event::Counts(counts) => self.counts.extend(counts),
       Event::Vcs { dir, info, repos } => {
         self.vcs_dirs.insert(dir, info);
@@ -301,9 +338,27 @@ impl App {
     }
   }
 
-  pub fn set_size(&mut self, _width: u16, height: u16) {
+  pub fn set_size(&mut self, width: u16, height: u16) {
+    self.width = width;
     self.rows = crate::ui::layout::body_rows(height);
     self.cursor.fix_offset(self.visible.len(), self.rows);
+    // Image previews are encoded for the column size, so a new size needs a new encoding.
+    if self
+      .preview
+      .as_ref()
+      .is_some_and(|slot| slot.stale_size(self.preview_cells()))
+    {
+      self.refresh_preview();
+    }
+  }
+
+  /// Size of the preview column (columns, rows), or `None` when it is hidden or empty.
+  pub fn preview_cells(&self) -> Option<(u16, u16)> {
+    let inner = ratatui::layout::Rect::new(0, 0, self.width.saturating_sub(2), self.rows as u16);
+    let (cols, _) = crate::ui::layout::split_columns(inner, self.config.column_ratios);
+    cols[2]
+      .filter(|r| r.width > 0 && r.height > 0)
+      .map(|r| (r.width, r.height))
   }
 
   pub fn tick(&mut self) {
@@ -358,6 +413,15 @@ impl App {
         self.set_info(format!("hidden files {state}"));
       }
       Action::Reload => self.reload(),
+      Action::ToggleMetadata => {
+        self.show_metadata = !self.show_metadata;
+        let mode = if self.show_metadata {
+          "metadata"
+        } else {
+          "content"
+        };
+        self.set_info(format!("preview shows {mode}"));
+      }
       Action::ToggleHelp => self.show_help = !self.show_help,
       Action::Quit => self.should_quit = true,
     }
@@ -579,13 +643,16 @@ impl App {
       return;
     };
     let stamp = (entry.mtime, entry.size);
+    let cells = self.preview_cells();
     if entry.is_dir()
       && let Some(listing) = self.listing(&entry.path).cloned()
     {
       self.preview = Some(PreviewSlot {
         path: entry.path,
         stamp,
+        cells,
         status: PreviewStatus::Ready(Arc::new(Preview::Directory(listing))),
+        image: None,
       });
       self.cancel_preview();
       return;
@@ -593,16 +660,20 @@ impl App {
     if let Some(slot) = &self.preview
       && slot.path == entry.path
       && slot.stamp == stamp
+      && !slot.stale_size(cells)
     {
       return;
     }
-    if let Some((cached_stamp, content)) = self.preview_cache.get(&entry.path)
-      && *cached_stamp == stamp
+    if let Some(cached) = self.preview_cache.get(&entry.path)
+      && cached.stamp == stamp
+      && (cached.cells == cells || !matches!(*cached.content, Preview::Image(_)))
     {
       self.preview = Some(PreviewSlot {
         path: entry.path,
         stamp,
-        status: PreviewStatus::Ready(Arc::clone(content)),
+        cells,
+        status: PreviewStatus::Ready(Arc::clone(&cached.content)),
+        image: cached.image.clone(),
       });
       self.cancel_preview();
       return;
@@ -613,12 +684,20 @@ impl App {
     self.preview = Some(PreviewSlot {
       path: entry.path.clone(),
       stamp,
+      cells,
       status: PreviewStatus::Loading,
+      image: None,
     });
-    self.commands.push(Command::Preview { id, entry });
+    self.commands.push(Command::Preview { id, entry, cells });
   }
 
-  fn on_preview(&mut self, id: u64, path: PathBuf, result: Result<Preview, String>) {
+  fn on_preview(
+    &mut self,
+    id: u64,
+    path: PathBuf,
+    result: Result<Preview, String>,
+    image: Option<EncodedImage>,
+  ) {
     if self.pending_preview != Some(id) {
       return; // stale result for an entry the cursor already left
     }
@@ -639,15 +718,30 @@ impl App {
           }
         }
         let content = Arc::new(preview);
+        let image = image.map(Arc::new);
         if !matches!(*content, Preview::Directory(_)) {
+          let is_image = |c: &CachedPreview| matches!(*c.content, Preview::Image(_));
           if self.preview_cache.len() >= PREVIEW_CACHE_LIMIT {
             self.preview_cache.clear();
           }
-          self
-            .preview_cache
-            .insert(path, (slot.stamp, Arc::clone(&content)));
+          // Decoded images are large; keep only a few of them.
+          if matches!(*content, Preview::Image(_))
+            && self.preview_cache.values().filter(|c| is_image(c)).count() >= IMAGE_CACHE_LIMIT
+          {
+            self.preview_cache.retain(|_, c| !is_image(c));
+          }
+          self.preview_cache.insert(
+            path,
+            CachedPreview {
+              stamp: slot.stamp,
+              cells: slot.cells,
+              content: Arc::clone(&content),
+              image: image.clone(),
+            },
+          );
         }
         slot.status = PreviewStatus::Ready(content);
+        slot.image = image;
       }
       Err(msg) => {
         slot.status = PreviewStatus::Failed(msg.clone());

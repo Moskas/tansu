@@ -8,6 +8,7 @@ use tansu::app::App;
 use tansu::config::Config;
 use tansu::event::{self, Event};
 use tansu::fs::meta;
+use tansu::graphics::ImageEncoder;
 use tansu::keymap::Keymap;
 use tansu::preview::PreviewRegistry;
 use tansu::runtime::Runtime;
@@ -58,12 +59,16 @@ fn main() -> Result<()> {
   }
 
   let mut guard = TerminalGuard::new()?;
+  // The terminal query reads stdin, so it has to finish before the input thread starts.
+  let images = app.config.preview_images.then(ImageEncoder::detect);
   let (tx, rx) = mpsc::channel();
   event::spawn_input_thread(tx.clone());
+  let registry = PreviewRegistry::configured(&app.config.highlight, app.config.preview_images);
   let mut runtime = Runtime::new(
     tx,
-    Arc::new(PreviewRegistry::with_defaults()),
+    Arc::new(registry),
     app.config.preview,
+    images,
     app.config.opener.clone(),
   );
 

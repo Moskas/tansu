@@ -8,7 +8,7 @@ use std::str::FromStr;
 use ratatui::style::Color;
 use serde::{Deserialize, Deserializer};
 
-use crate::preview::PreviewLimits;
+use crate::preview::{HighlightConfig, PreviewLimits};
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -25,7 +25,12 @@ pub struct Config {
   pub vcs_aware: bool,
   /// Sizes in base 1024 with `Ki`/`Mi` units instead of base 1000 with `k`/`M`.
   pub binary_size_prefix: bool,
+  /// Show images in the preview column with the terminal's graphics protocol (like
+  /// ranger's `preview_images`).
+  pub preview_images: bool,
   pub preview: PreviewLimits,
+  /// Syntax highlighting of text previews through `bat`.
+  pub highlight: HighlightConfig,
   pub theme: Theme,
   /// Key notation to action name, e.g. `"J" = "half_page_down"`. `"none"` unbinds.
   pub keys: BTreeMap<String, String>,
@@ -40,7 +45,9 @@ impl Default for Config {
       column_ratios: [1, 3, 4],
       vcs_aware: true,
       binary_size_prefix: false,
+      preview_images: true,
       preview: PreviewLimits::default(),
+      highlight: HighlightConfig::default(),
       theme: Theme::default(),
       keys: BTreeMap::new(),
     }
@@ -100,6 +107,10 @@ impl Config {
     if self.opener.split_whitespace().next().is_none() {
       warnings.push("config: opener is empty, using xdg-open".to_string());
       self.opener = Config::default().opener;
+    }
+    if self.highlight.enabled && self.highlight.command.trim().is_empty() {
+      warnings.push("config: highlight.command is empty, using bat".to_string());
+      self.highlight.command = HighlightConfig::default().command;
     }
     let p = &mut self.preview;
     p.max_bytes = p.max_bytes.clamp(1024, 16 * 1024 * 1024);

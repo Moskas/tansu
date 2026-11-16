@@ -26,7 +26,7 @@ nix develop          # or `direnv allow` with the provided .envrc
 cargo run -- [path]  # opens at path, defaults to the current directory
 ```
 
-Without Nix, a stable Rust toolchain (edition 2024, Rust 1.88+) is enough:
+Without Nix, a stable Rust toolchain (edition 2024, Rust 1.90+) is enough:
 
 ```sh
 cargo build --release
@@ -39,6 +39,23 @@ Icons use Nerd Font glyphs by default, picked by file name and extension with th
 tables as the ranger_devicons plugin. Set `icons = false` if your terminal font lacks them.
 
 Git status markers need the `git` executable on `PATH`; without it, tansu shows none.
+
+## Previews
+
+The right column previews the selected entry: a directory listing, syntax-highlighted
+text, an image, or a metadata block for everything else.
+
+- Text is highlighted by piping the first `max_lines` lines through
+  [bat](https://github.com/sharkdp/bat) with `--style=plain --theme=ansi`, matching
+  ranger's scope.sh. Without bat on `PATH`, previews fall back to plain text.
+- Images (PNG, JPEG, GIF, WebP, BMP, TIFF, ICO, QOI, TGA, PNM) are drawn with the graphics
+  protocol the terminal supports (kitty, sixel or iTerm2), detected at startup. Other
+  terminals get unicode half blocks. Formats that cannot be decoded, such as SVG, fall back
+  to the text or metadata preview. Images are scaled once with Lanczos to the column's pixel
+  size, never enlarged.
+- `i` switches file previews to a metadata block (size, mode, owner, modification time,
+  and dimensions for images) and back. The mode stays on while moving; directories keep
+  showing their contents.
 
 ## Git status markers
 
@@ -78,6 +95,7 @@ cargo test
 | `<PageDown>` / `<PageUp>`   | Page down / up                |
 | `~`                         | Go to home directory          |
 | `.`                         | Toggle hidden files           |
+| `i`                         | Toggle file metadata / preview|
 | `r`                         | Reload directory              |
 | `?`                         | Toggle help overlay           |
 | `q`, `<C-c>`                | Quit                          |
@@ -112,10 +130,19 @@ vcs_aware = true
 # Sizes in base 1024 with Ki/Mi units instead of base 1000 with k/M.
 binary_size_prefix = false
 
+# Draw image previews with the terminal's graphics protocol.
+preview_images = true
+
 [preview]
 max_bytes = 65536     # bytes read from a file for the text preview
 max_lines = 300       # lines kept from a text preview
 max_entries = 10000   # entries listed for a directory preview
+
+# Syntax highlighting of text previews.
+[highlight]
+enabled = true
+command = "bat"
+theme = "ansi"        # passed as --theme; "" uses bat's own configuration
 
 # Colors: "#rrggbb", a name ("red", "lightblue"), a 256-color index ("208"),
 # or "reset" for the terminal default. Defaults are a Gruvbox-dark palette.
@@ -170,6 +197,7 @@ vcs_commit = "#fabd2f"
 
 Action names: `move_up`, `move_down`, `move_top`, `move_bottom`, `half_page_up`,
 `half_page_down`, `page_up`, `page_down`, `go_parent`, `open`, `go_home`, `toggle_hidden`,
+`toggle_metadata`,
 `reload`, `toggle_help`, `quit`.
 
 ## Architecture
@@ -193,7 +221,8 @@ file) that the runtime executes in the background and answers with events.
 | `nav.rs`      | Cursor and scroll offset math                                      |
 | `opener.rs`   | Detached file opener                                               |
 | `fs/`         | Entries, listing, natural sort, metadata formatting (no UI types)  |
-| `preview/`    | `Previewer` trait, registry, text/directory/metadata previewers    |
+| `preview/`    | `Previewer` trait, registry, built-in previewers, ANSI parsing     |
+| `graphics.rs` | Encodes images for the terminal graphics protocol                  |
 | `vcs/`        | Git status via the `git` CLI, per-path and per-directory status    |
 | `ui/`         | Layout, columns, header, status bar, help overlay, icons           |
 
