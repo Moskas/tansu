@@ -6,7 +6,10 @@ use ratatui::widgets::Widget;
 
 use super::text::display_width;
 use crate::app::{App, MessageLevel};
+use crate::fs::FileClass;
 use crate::fs::meta::{format_mtime, format_permissions, human_size_compact};
+use crate::ui::columns::{entry_info, mark_color};
+use crate::vcs::Mark;
 
 /// Left: metadata of the selected entry (or a message). Right: totals and position.
 pub fn render(buf: &mut Buffer, area: Rect, app: &App) {
@@ -15,15 +18,16 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App) {
   }
   let theme = &app.config.theme;
   let base = Style::new().fg(theme.status_fg.0);
+  let binary = app.config.binary_size_prefix;
 
   let len = app.visible_len();
   let pos = if len == 0 { 0 } else { app.cursor().index + 1 };
   let free = app
     .free_space()
-    .map_or_else(|| "?".to_string(), human_size_compact);
+    .map_or_else(|| "?".to_string(), |b| human_size_compact(b, binary));
   let right = format!(
     "{} sum, {free} free  {pos}/{len}  {}",
-    human_size_compact(app.visible_file_bytes()),
+    human_size_compact(app.visible_file_bytes(), binary),
     app.scroll_pos()
   );
   let right_w = display_width(&right) as u16;
@@ -43,34 +47,90 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App) {
   let Some(entry) = app.selected() else {
     return;
   };
-  let size = if entry.is_dir() {
-    app
-      .dir_count(&entry.path)
-      .map_or_else(|| human_size_compact(entry.size), |n| n.to_string())
+  // Ranger colors permissions by ownership: yours vs someone else's.
+  let perms_color = if entry.uid == app.uid {
+    theme.status_perms
   } else {
-    human_size_compact(entry.size)
+    theme.status_perms_other
   };
-  let mut spans = vec![
+  let mut segments = vec![
     Span::styled(
       format_permissions(entry.mode),
-      Style::new().fg(theme.status_perms.0),
+      Style::new().fg(perms_color.0),
     ),
     Span::styled(
-      format!(
-        " {} {} {} {size} {}",
-        entry.nlink,
-        entry.owner,
-        entry.group,
-        format_mtime(entry.mtime)
-      ),
+      format!(" {} {} {}", entry.nlink, entry.owner, entry.group),
       base,
     ),
   ];
-  if let Some(target) = &entry.link_target {
-    spans.push(Span::styled(
-      format!(" -> {}", target.display()),
-      Style::new().fg(theme.symlink.0),
-    ));
+  match &entry.link_target {
+    // Symlinks show their target in place of size and date.
+    Some(target) => {
+      let color = if entry.class() == FileClass::BrokenLink {
+        theme.broken_link
+      } else {
+        theme.symlink
+      };
+      segments.push(Span::styled(
+        format!(" -> {}", target.display()),
+        Style::new().fg(color.0),
+      ));
+    }
+    None => {
+      // The column's info string without spaces: `407B`, `15`, `fifo`.
+      let size = entry_info(entry, app).map(|s| s.replace(' ', ""));
+      let text = match size {
+        Some(size) if !size.is_empty() => format!(" {size} {}", format_mtime(entry.mtime)),
+        _ => format!(" {}", format_mtime(entry.mtime)),
+      };
+      segments.push(Span::styled(text, base));
+    }
   }
-  Line::from(spans).render(left, buf);
+  if let Some((repo, status)) = app.vcs_selection() {
+    let info = match &repo.branch {
+      Some(branch) => format!(" (git: {branch})"),
+      None => " (git)".to_string(),
+    };
+    segments.push(Span::styled(info, Style::new().fg(theme.vcs_info.0)));
+    segments.push(Span::raw(" "));
+    segments.push(Span::styled(
+      Mark::Remote(repo.remote).symbol().to_string(),
+      Style::new().fg(mark_color(Mark::Remote(repo.remote), theme)),
+    ));
+    segments.push(Span::styled(
+      Mark::File(status).symbol().to_string(),
+      Style::new().fg(mark_color(Mark::File(status), theme)),
+    ));
+    if let Some(head) = &repo.head {
+      segments.push(Span::styled(
+        format!(" {}", format_mtime(head.time)),
+        Style::new().fg(theme.vcs_date.0),
+      ));
+      let summary: String = head.summary.chars().take(COMMIT_SUMMARY_LEN).collect();
+      segments.push(Span::styled(
+        format!(" {summary}"),
+        Style::new().fg(theme.vcs_commit.0),
+      ));
+    }
+  }
+  Line::from(fitting(segments, left_w as usize)).render(left, buf);
+}
+
+/// Longest commit summary shown (ranger's `vcs_msg_length` default).
+const COMMIT_SUMMARY_LEN: usize = 50;
+
+/// Like ranger, drops whole segments from the end until the rest fits. The first segment
+/// is always kept (and clipped by the caller if even it is too wide).
+fn fitting(segments: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+  let mut used = 0;
+  let mut out = Vec::new();
+  for (i, seg) in segments.into_iter().enumerate() {
+    let w = display_width(&seg.content);
+    if i > 0 && used + w > width {
+      break;
+    }
+    used += w;
+    out.push(seg);
+  }
+  out
 }

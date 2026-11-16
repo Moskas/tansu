@@ -7,13 +7,19 @@ use ratatui::widgets::Widget;
 use crate::app::App;
 use crate::fs::entry::sanitize;
 
-/// `user@host /current/path`
+/// `user@host /current/dir/selected`, like ranger's title bar: the directory part in the
+/// path color, the selected entry's name in the default color.
 pub fn render(buf: &mut Buffer, area: Rect, app: &App) {
   let theme = &app.config.theme;
-  let path = sanitize(&app.cwd.to_string_lossy());
-  let (dir, name) = match path.rfind('/') {
-    Some(i) => path.split_at(i + 1),
-    None => ("", path.as_str()),
+  let mut dir = sanitize(&app.cwd.to_string_lossy());
+  let name = match app.selected() {
+    Some(entry) => {
+      if !dir.ends_with('/') {
+        dir.push('/');
+      }
+      entry.name.as_str()
+    }
+    None => "",
   };
   Line::from(vec![
     Span::styled(

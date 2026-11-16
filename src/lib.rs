@@ -12,4 +12,5 @@ pub mod preview;
 pub mod runtime;
 pub mod terminal;
 pub mod ui;
+pub mod vcs;
 pub mod worker;

@@ -4,14 +4,18 @@ A terminal file manager with Miller columns, in the spirit of ranger. Written in
 ratatui and crossterm.
 
 ```
-user@host /home/user/Downloads/m58
-┌────────────┬──────────────────────────┬──────────────────────────────────┐
-│ Downloads  │ horizon                5 │ [M3-58] MAD MIND MACHINE - X-C~  │
-│ Music      │ m58                    2 │ [M3-58] MAD MIND MACHINE - E-L~  │
-│ Pictures   │ archive.zip        127 M │                                  │
-└────────────┴──────────────────────────┴──────────────────────────────────┘
-drwxr-xr-x 1 user users 2 2026-10-27 09:40      5.58G sum, 96.1G free  6/44  Top
+user@host /home/user/Repos/tansu/src
+┌─────────┬────────────────────────────────┬──────────────────────────────────────┐
+│  scri~  │  src                       16 ?│  fs                                 ✓│
+│  seiri=✓│  target                     6 ·│  preview                            +│
+│  tansu⌂?│  Cargo.toml             407 B ✓│  app.rs                             +│
+│  tui  ⌂?│  SPEC.md               5.37 k ?│  main.rs                            ✓│
+└─────────┴────────────────────────────────┴──────────────────────────────────────┘
+drwxr-xr-x 1 user users 16 2026-11-16 12:12             67.6k sum, 95.4G free  1/10  All
 ```
+
+The layout and conventions follow ranger: sizes use SI units (`48 k`), directory counts
+include hidden entries, and git status markers sit at the right edge of each row.
 
 ## Build and run
 
@@ -31,7 +35,26 @@ cargo build --release
 
 If `path` is a file, tansu opens its directory with that file selected.
 
-Icons use Nerd Font glyphs by default. Set `icons = false` if your terminal font lacks them.
+Icons use Nerd Font glyphs by default, picked by file name and extension with the same
+tables as the ranger_devicons plugin. Set `icons = false` if your terminal font lacks them.
+
+Git status markers need the `git` executable on `PATH`; without it, tansu shows none.
+
+## Git status markers
+
+Inside a repository, each entry ends with its status. Directories take the most
+significant status of their contents (ignored files do not count).
+
+| Mark | Meaning   | Mark | Meaning                     |
+|------|-----------|------|-----------------------------|
+| `✓`  | clean     | `?`  | untracked                   |
+| `+`  | modified  | `*`  | staged                      |
+| `-`  | deleted   | `X`  | conflict                    |
+| `·`  | ignored   | `!`  | unknown                     |
+
+A directory that is itself a repository root gets a second mark in front, describing its
+branch relative to the upstream: `=` in sync, `>` ahead, `<` behind, `Y` diverged, `⌂` no
+upstream. Status comes from `git status` in the background and is refreshed on `r`.
 
 ## Development
 
@@ -83,6 +106,12 @@ opener = "xdg-open"
 # Width ratios for parent : current : preview. 0 hides the parent or preview column.
 column_ratios = [1, 3, 4]
 
+# Git status markers next to entries.
+vcs_aware = true
+
+# Sizes in base 1024 with Ki/Mi units instead of base 1000 with k/M.
+binary_size_prefix = false
+
 [preview]
 max_bytes = 65536     # bytes read from a file for the text preview
 max_lines = 300       # lines kept from a text preview
@@ -96,24 +125,37 @@ dim = "#928374"
 border = "#d5c4a1"
 header_user = "#b8bb26"
 header_path = "#ebdbb2"
-directory = "#ebdbb2"
+directory = "lightblue"   # terminal palette bright blue, as in ranger
 file = "#ebdbb2"
 executable = "#b8bb26"
 symlink = "#8ec07c"
-broken_link = "#cc241d"
+broken_link = "#d3869b"
 archive = "#fb4934"
 image = "#fabd2f"
 video = "#d3869b"
 audio = "#d3869b"
-document = "#fe8019"
-code = "#83a598"
+document = "#ebdbb2"
+code = "#ebdbb2"
 special = "#d79921"
 cursor_fg = "#282828"
 cursor_bg = "#7c9f88"
 status_fg = "#d5c4a1"
-status_perms = "#98971a"
+status_perms = "#8ec07c"
+status_perms_other = "#d3869b"
 error = "#fb4934"
 help_key = "#fabd2f"
+vcs_sync = "#b8bb26"
+vcs_changed = "#fb4934"
+vcs_staged = "#b8bb26"
+vcs_untracked = "#8ec07c"
+vcs_conflict = "#d3869b"
+vcs_ignored = "#ebdbb2"
+vcs_ahead = "#83a598"
+vcs_behind = "#fb4934"
+vcs_diverged = "#d3869b"
+vcs_info = "#83a598"
+vcs_date = "#8ec07c"
+vcs_commit = "#fabd2f"
 
 # Key notation follows vim: plain characters, sequences ("gg"), and <...> for special
 # keys and modifiers (<C-d>, <A-x>, <S-Tab>, <Enter>, <Esc>, <Space>, <lt>, <F5>).
@@ -134,8 +176,8 @@ Action names: `move_up`, `move_down`, `move_top`, `move_bottom`, `half_page_up`,
 
 Data flows one way: input event -> `Action` (via the keymap) -> `App` state update ->
 render. Rendering only reads state. The app never performs I/O itself; it queues
-`Command`s (list a directory, build a preview, count subdirectory items, open a file) that
-the runtime executes in the background and answers with events.
+`Command`s (list a directory, build a preview, count subdirectory items, query git, open a
+file) that the runtime executes in the background and answers with events.
 
 | Module        | Purpose                                                            |
 |---------------|--------------------------------------------------------------------|
@@ -152,11 +194,14 @@ the runtime executes in the background and answers with events.
 | `opener.rs`   | Detached file opener                                               |
 | `fs/`         | Entries, listing, natural sort, metadata formatting (no UI types)  |
 | `preview/`    | `Previewer` trait, registry, text/directory/metadata previewers    |
+| `vcs/`        | Git status via the `git` CLI, per-path and per-directory status    |
 | `ui/`         | Layout, columns, header, status bar, help overlay, icons           |
 
 Responsiveness: directory listings run on their own threads; previews and item counts run
-on latest-wins workers, so moving the cursor cancels stale work. Text previews read at most
-`max_bytes`, directory previews at most `max_entries`.
+on latest-wins workers, so moving the cursor cancels stale work. Git status runs on its own
+ordered worker with a short per-repository cache, so the three columns of one repository
+cost a single `git status`. Text previews read at most `max_bytes`, directory previews at
+most `max_entries`.
 
 ### Extension points
 

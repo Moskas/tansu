@@ -289,16 +289,30 @@ fn permission_strings() {
 }
 
 #[test]
-fn human_sizes_use_three_significant_digits() {
-  assert_eq!(human_size(0), "0 B");
-  assert_eq!(human_size(1023), "1023 B");
-  assert_eq!(human_size(1024), "1.00 K");
-  assert_eq!(human_size(30_932_992), "29.5 M");
-  assert_eq!(human_size(133_169_152), "127 M");
-  assert_eq!(human_size_compact(5_991_257_088), "5.58G");
-  assert_eq!(human_size_compact(512), "512");
-  // Rounding never produces four significant digits like `10.00`.
-  assert_eq!(human_size(10_485_000), "10.0 M");
+fn human_sizes_match_ranger() {
+  // Cases from ranger's own doctests (ranger/ext/human_readable.py).
+  assert_eq!(human_size(54, false), "54 B");
+  assert_eq!(human_size(1500, false), "1.5 k");
+  assert_eq!(human_size(1023 << 20, false), "1.07 G");
+  assert_eq!(human_size(54, true), "54 B");
+  assert_eq!(human_size(1500, true), "1.46 Ki");
+  assert_eq!(human_size(1023 << 20, true), "1023 Mi");
+  // Values seen in ranger next to the same files.
+  assert_eq!(human_size(48_026, false), "48 k");
+  assert_eq!(human_size(407, false), "407 B");
+  assert_eq!(human_size(7_210, false), "7.21 k");
+  assert_eq!(human_size(0, false), "0");
+  assert_eq!(human_size_compact(67_700, false), "67.7k");
+  assert_eq!(human_size_compact(95_400_000_000, false), "95.4G");
+  assert_eq!(human_size_compact(0, false), "0");
+}
+
+#[test]
+fn human_size_rounding_carries_to_next_unit() {
+  // `%.3g` would print `1e+03 k` here; tansu moves to the next unit instead.
+  assert_eq!(human_size(999_600, false), "1 M");
+  assert_eq!(human_size(999_400, false), "999 k");
+  assert_eq!(human_size(9_996, false), "10 k");
 }
 
 // ---- layout ----
@@ -401,4 +415,93 @@ fn readme_sample_config_parses_without_warnings() {
   );
   let (_, warnings) = Keymap::with_overrides(&cfg.keys);
   assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+// ---- vcs ----
+
+#[test]
+fn porcelain_v2_parsing() {
+  use std::path::Path;
+  use tansu::vcs::{FileStatus as F, RemoteStatus, parse_status};
+
+  let root = Path::new("/r");
+  let out: &[u8] = b"# branch.oid abc\0# branch.head main\0# branch.upstream origin/main\0\
+# branch.ab +1 -2\0\
+1 .M N... 100644 100644 100644 aaa bbb src/lib.rs\0\
+1 M. N... 100644 100644 100644 aaa bbb docs/a b.md\0\
+2 R. N... 100644 100644 100644 aaa bbb R100 new name.rs\0old name.rs\0\
+u UU N... 100644 100644 100644 100644 a b c conflict.txt\0\
+1 .D N... 100644 100644 000000 aaa aaa gone.rs\0\
+? new/\0! target/\0? notes.txt\0";
+  let s = parse_status(root, out);
+  assert_eq!(s.remote, RemoteStatus::Diverged);
+  assert_eq!(s.branch.as_deref(), Some("main"));
+  assert_eq!(s.summary, F::Conflict);
+  let st = |p: &str, dir| s.status_of(&root.join(p), dir);
+  assert_eq!(st("src/lib.rs", false), F::Changed);
+  assert_eq!(st("src", true), F::Changed);
+  assert_eq!(
+    st("docs/a b.md", false),
+    F::Staged,
+    "paths may contain spaces"
+  );
+  assert_eq!(st("new name.rs", false), F::Staged);
+  assert_eq!(
+    st("old name.rs", false),
+    F::Sync,
+    "rename source is not a record"
+  );
+  assert_eq!(st("conflict.txt", false), F::Conflict);
+  assert_eq!(st("gone.rs", false), F::Deleted);
+  assert_eq!(st("new", true), F::Untracked);
+  assert_eq!(
+    st("new/deep/file", false),
+    F::Untracked,
+    "inherits untracked dir"
+  );
+  assert_eq!(st("target", true), F::Ignored);
+  assert_eq!(st("target/debug", true), F::Ignored);
+  assert_eq!(st("README.md", false), F::Sync);
+  assert_eq!(st("", true), F::Conflict, "root shows summary");
+}
+
+#[test]
+fn ignored_contents_do_not_mark_directories() {
+  use std::path::Path;
+  use tansu::vcs::{FileStatus as F, RemoteStatus, parse_status};
+
+  let root = Path::new("/r");
+  let s = parse_status(root, b"# branch.head main\0! build/out.o\0");
+  assert_eq!(s.remote, RemoteStatus::None, "no upstream");
+  assert_eq!(s.branch.as_deref(), Some("main"));
+  let detached = parse_status(root, b"# branch.oid abc\0# branch.head (detached)\0");
+  assert_eq!(detached.branch, None);
+  assert_eq!(s.summary, F::Sync);
+  assert_eq!(s.status_of(&root.join("build"), true), F::Sync);
+  assert_eq!(s.status_of(&root.join("build/out.o"), false), F::Ignored);
+}
+
+#[test]
+fn xy_codes_follow_ranger_table() {
+  use tansu::vcs::FileStatus as F;
+  assert_eq!(F::from_xy(b'M', b'.'), F::Staged);
+  assert_eq!(F::from_xy(b'A', b'.'), F::Staged);
+  assert_eq!(F::from_xy(b'.', b'M'), F::Changed);
+  assert_eq!(F::from_xy(b'M', b'M'), F::Changed);
+  assert_eq!(F::from_xy(b'.', b'D'), F::Deleted);
+  assert_eq!(F::from_xy(b'U', b'U'), F::Conflict);
+  assert_eq!(F::from_xy(b'A', b'A'), F::Conflict);
+  assert_eq!(F::from_xy(b'.', b'T'), F::Unknown);
+}
+
+#[test]
+fn head_commit_parsing() {
+  use tansu::vcs::parse_head;
+  let c = parse_head(b"1763290000\0Fix the \x1b[31mthing\n").unwrap();
+  assert_eq!(c.time, 1_763_290_000);
+  assert_eq!(
+    c.summary, "Fix the ?[31mthing",
+    "control characters are neutralized"
+  );
+  assert!(parse_head(b"").is_none());
 }

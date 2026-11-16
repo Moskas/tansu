@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use std::thread;
 
@@ -6,6 +7,7 @@ use crossterm::event::{self as ct, KeyEvent};
 
 use crate::fs::{DirCount, DirListing};
 use crate::preview::Preview;
+use crate::vcs::{DirVcs, RepoStatus};
 
 /// Everything the main loop reacts to: terminal input, timer ticks, and results from
 /// background jobs.
@@ -25,6 +27,12 @@ pub enum Event {
     result: Result<Preview, String>,
   },
   Counts(Vec<(PathBuf, DirCount)>),
+  /// VCS status for the entries of `dir`, plus the repositories involved.
+  Vcs {
+    dir: PathBuf,
+    info: DirVcs,
+    repos: Vec<Arc<RepoStatus>>,
+  },
 }
 
 /// Spawns a thread that forwards terminal input events until the receiver goes away.

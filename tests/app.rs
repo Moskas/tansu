@@ -47,6 +47,7 @@ fn fixture() -> (TempDir, PathBuf) {
 fn new_app(start: &Path) -> App {
   let config = Config {
     icons: false,
+    vcs_aware: false,
     ..Config::default()
   };
   let mut app = App::new(
@@ -97,14 +98,18 @@ fn selected(app: &App) -> String {
 }
 
 fn render(app: &App) -> Vec<String> {
-  let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
+  render_sized(app, WIDTH, HEIGHT)
+}
+
+fn render_sized(app: &App, width: u16, height: u16) -> Vec<String> {
+  let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
   terminal.draw(|f| tansu::ui::render(f, app)).unwrap();
   let buf = terminal.backend().buffer().clone();
-  (0..HEIGHT)
+  (0..height)
     .map(|y| {
       let mut line = String::new();
       let mut x = 0;
-      while x < WIDTH {
+      while x < width {
         let sym = buf[(x, y)].symbol();
         line.push_str(sym);
         // Wide characters occupy the next cell, which holds an empty placeholder.
@@ -375,16 +380,16 @@ fn snapshot_main_layout() {
 
   let header = &lines[0];
   assert!(header.starts_with("tester@box /"), "{header}");
-  assert!(header.trim_end().ends_with("/work"), "{header}");
+  assert!(header.trim_end().ends_with("/work/alpha"), "{header}");
 
   let expected_body = [
     "┌───────┬─────────────────────┬────────────────────────────┐",
-    "│/ work │/ alpha            2 │- a.txt                     │",
-    "│       │/ beta             0 │- b.txt                     │",
-    "│       │- blob.bin       7 B │                            │",
-    "│       │- file2.txt      4 B │                            │",
-    "│       │- file10.txt    13 B │                            │",
-    "│       │& 好きな歌の~ 2.00 K │                            │",
+    "│ / work│ / alpha            3│ - a.txt                    │",
+    "│       │ / beta             0│ - b.txt                    │",
+    "│       │ - blob.bin       7 B│                            │",
+    "│       │ - file2.txt      4 B│                            │",
+    "│       │ - file10.txt    13 B│                            │",
+    "│       │ & 好きな歌の~ 2.05 k│                            │",
     "│       │                     │                            │",
     "│       │                     │                            │",
     "└───────┴─────────────────────┴────────────────────────────┘",
@@ -394,7 +399,136 @@ fn snapshot_main_layout() {
   let status = &lines[11];
   assert!(status.starts_with("drwx"), "{status}");
   assert!(status.trim_end().ends_with("1/6  All"), "{status}");
-  assert!(status.contains("2.02K sum"), "{status}");
+  assert!(status.contains("2.07k sum"), "{status}");
+}
+
+/// Runs git with an isolated configuration so the user's global settings (signing, hooks)
+/// cannot interfere. Returns false if git is unavailable.
+fn git(dir: &Path, args: &[&str]) -> bool {
+  std::process::Command::new("git")
+    .args([
+      "-c",
+      "user.name=tansu",
+      "-c",
+      "user.email=tansu@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "-c",
+      "init.defaultBranch=main",
+    ])
+    .args(args)
+    .current_dir(dir)
+    .env("GIT_CONFIG_GLOBAL", "/dev/null")
+    .env("GIT_CONFIG_NOSYSTEM", "1")
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .status()
+    .is_ok_and(|s| s.success())
+}
+
+fn marks(app: &App, dir: &Path, name: &str) -> String {
+  let listing = app.listing(dir).expect("listing loaded");
+  let entry = listing.entries.iter().find(|e| e.name == name).unwrap();
+  app
+    .vcs_marks(dir, entry)
+    .iter()
+    .map(|m| m.symbol())
+    .collect()
+}
+
+#[test]
+fn git_status_markers_in_repo_and_parent() {
+  let tmp = tempfile::tempdir().unwrap();
+  let repos = tmp.path().join("repos");
+  let repo = repos.join("proj");
+  fs::create_dir_all(repo.join("src")).unwrap();
+  fs::create_dir_all(repo.join("target")).unwrap();
+  fs::create_dir_all(repos.join("plain")).unwrap();
+  fs::write(repo.join(".gitignore"), "target/\n").unwrap();
+  fs::write(repo.join("src/lib.rs"), "fn a() {}\n").unwrap();
+  fs::write(repo.join("README.md"), "hi\n").unwrap();
+  fs::write(repo.join("target/out"), "x").unwrap();
+  if !git(&repo, &["init", "-q"]) {
+    eprintln!("git not available, skipping");
+    return;
+  }
+  assert!(git(&repo, &["add", "."]));
+  assert!(git(&repo, &["commit", "-q", "-m", "init"]));
+  fs::write(repo.join("src/lib.rs"), "fn b() {}\n").unwrap();
+  fs::write(repo.join("NOTES"), "new\n").unwrap();
+
+  let mut app = new_app(&repo);
+  app.config.vcs_aware = true;
+  press(&mut app, "r");
+
+  assert_eq!(
+    marks(&app, &repo, "src"),
+    "+",
+    "directory takes child status"
+  );
+  assert_eq!(marks(&app, &repo, "target"), "·", "ignored directory");
+  assert_eq!(marks(&app, &repo, "README.md"), "✓");
+  assert_eq!(marks(&app, &repo, "NOTES"), "?");
+
+  // Parent column: the repository root gets remote + summary, its sibling blanks.
+  assert_eq!(marks(&app, &repos, "proj"), "⌂?");
+  assert_eq!(marks(&app, &repos, "plain"), "  ");
+
+  // Rendered: marks sit flush against each column's right separator.
+  let lines = render_sized(&app, 80, HEIGHT);
+  let column = |name: &str, col: usize| -> String {
+    lines
+      .iter()
+      .map(|l| l.split('│').collect::<Vec<_>>())
+      .find(|parts| parts.len() == 5 && parts[col].contains(name))
+      .map(|parts| parts[col].to_string())
+      .unwrap_or_else(|| panic!("{name} not in column {col}:\n{}", lines.join("\n")))
+  };
+  assert!(column("src", 2).ends_with(" 1 +"), "{:?}", column("src", 2));
+  assert!(
+    column("NOTES", 2).ends_with(" ?"),
+    "{:?}",
+    column("NOTES", 2)
+  );
+  assert!(column("proj", 1).ends_with("⌂?"), "{:?}", column("proj", 1));
+  assert!(column("pla", 1).ends_with("~  "), "{:?}", column("pla", 1));
+
+  // Nothing is tracked inside the repository's own .git directory.
+  let head = app
+    .listing(&repo)
+    .unwrap()
+    .entries
+    .iter()
+    .find(|e| e.name == ".git")
+    .cloned()
+    .unwrap();
+  assert!(app.vcs_marks(&repo.join(".git"), &head).is_empty());
+
+  // Status bar on a file in the repository: branch, remote + file status, commit.
+  while app.selected().is_some_and(|e| e.name != "NOTES") {
+    press(&mut app, "j");
+  }
+  let status = render_sized(&app, 140, HEIGHT).pop().unwrap();
+  assert!(status.contains("(git: main) ⌂?"), "{status}");
+  // On a directory that is not a repository root, ranger shows no git info.
+  press(&mut app, "gg");
+  let status = render_sized(&app, 140, HEIGHT).pop().unwrap();
+  assert!(!status.contains("(git"), "{status}");
+
+  // Inside src (and in the preview of src) files carry their own status.
+  press(&mut app, "l");
+  assert_eq!(app.cwd, repo.join("src"));
+  assert_eq!(marks(&app, &repo.join("src"), "lib.rs"), "+");
+}
+
+#[test]
+fn no_markers_outside_repositories() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  app.config.vcs_aware = true;
+  press(&mut app, "r");
+  let entry = app.selected().unwrap().clone();
+  assert!(app.vcs_marks(&work, &entry).is_empty());
 }
 
 #[test]

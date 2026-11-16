@@ -1,6 +1,7 @@
 //! Rendering. Everything here reads [`App`] state and draws into a buffer; no I/O happens.
 
 pub mod columns;
+pub mod devicons;
 pub mod header;
 pub mod help;
 pub mod icons;
@@ -11,11 +12,11 @@ pub mod text;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 
 use crate::app::App;
 use crate::config::Theme;
-use crate::fs::{Entry, FileClass};
+use crate::fs::{Entry, EntryKind, FileClass};
 
 pub fn render(frame: &mut Frame, app: &App) {
   let area = frame.area();
@@ -55,5 +56,16 @@ pub fn entry_style(entry: &Entry, theme: &Theme) -> Style {
     FileClass::Special => theme.special,
     FileClass::Text | FileClass::Other => theme.file,
   };
-  Style::new().fg(color.0)
+  // Ranger makes executables, sockets and devices bold (directories are kept regular).
+  let bold = match entry.kind {
+    EntryKind::Socket | EntryKind::CharDevice | EntryKind::BlockDevice => true,
+    EntryKind::File => entry.class() == FileClass::Executable,
+    _ => false,
+  };
+  let style = Style::new().fg(color.0);
+  if bold {
+    style.add_modifier(Modifier::BOLD)
+  } else {
+    style
+  }
 }

@@ -35,38 +35,62 @@ pub fn format_permissions(mode: u32) -> String {
   s
 }
 
-/// Splits a byte count into a 3-significant-digit number and a unit (`B`, `K`, `M`, ...).
-pub fn human_size_parts(bytes: u64) -> (String, &'static str) {
-  const UNITS: [&str; 7] = ["B", "K", "M", "G", "T", "P", "E"];
-  if bytes < 1024 {
-    return (bytes.to_string(), UNITS[0]);
+/// Splits a byte count into a number and a unit the way ranger does: three significant
+/// digits, trailing zeros dropped. SI (`k`, `M`, base 1000) by default, or IEC (`Ki`, `Mi`,
+/// base 1024) when `binary` is set. Zero is `("0", "")`.
+pub fn human_size_parts(bytes: u64, binary: bool) -> (String, &'static str) {
+  const SI: [&str; 7] = ["B", "k", "M", "G", "T", "P", "E"];
+  const IEC: [&str; 7] = ["B", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei"];
+  if bytes == 0 {
+    return ("0".to_string(), "");
   }
+  let (units, base) = if binary { (IEC, 1024.0) } else { (SI, 1000.0) };
   let mut value = bytes as f64;
   let mut unit = 0;
-  while value >= 1000.0 && unit < UNITS.len() - 1 {
-    value /= 1024.0;
+  while value >= base && unit < units.len() - 1 {
+    value /= base;
     unit += 1;
   }
-  let text = if value < 9.995 {
-    format!("{value:.2}")
-  } else if value < 99.95 {
-    format!("{value:.1}")
+  // `1023` (binary) needs four digits, like ranger's `%.4g`.
+  let digits = if value < 1000.0 { 3 } else { 4 };
+  let mut text = significant(value, digits);
+  // Rounding can carry over to the next unit (999.7 k -> 1 M).
+  if text.parse::<f64>().is_ok_and(|v| v >= 1000.0) && digits == 3 && unit < units.len() - 1 {
+    value /= base;
+    unit += 1;
+    text = significant(value, 3);
+  }
+  (text, units[unit])
+}
+
+/// Formats like C's `%.Ng` for values >= 1: N significant digits, no trailing zeros.
+fn significant(value: f64, digits: i32) -> String {
+  let int_digits = if value < 1.0 {
+    1
   } else {
-    format!("{value:.0}")
+    value.log10().floor() as i32 + 1
   };
-  (text, UNITS[unit])
+  let decimals = (digits - int_digits).max(0) as usize;
+  let s = format!("{value:.decimals$}");
+  if s.contains('.') {
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+  } else {
+    s
+  }
 }
 
 /// `127 M` style size used in the file columns.
-pub fn human_size(bytes: u64) -> String {
-  let (n, u) = human_size_parts(bytes);
-  format!("{n} {u}")
+pub fn human_size(bytes: u64, binary: bool) -> String {
+  match human_size_parts(bytes, binary) {
+    (n, "") => n,
+    (n, u) => format!("{n} {u}"),
+  }
 }
 
 /// `5.58G` style size used in the status bar.
-pub fn human_size_compact(bytes: u64) -> String {
-  let (n, u) = human_size_parts(bytes);
-  if u == "B" { n } else { format!("{n}{u}") }
+pub fn human_size_compact(bytes: u64, binary: bool) -> String {
+  let (n, u) = human_size_parts(bytes, binary);
+  format!("{n}{u}")
 }
 
 /// Formats a Unix timestamp as local `YYYY-MM-DD HH:MM`.
@@ -177,6 +201,12 @@ pub fn hostname() -> String {
   unsafe { CStr::from_ptr(buf.as_ptr()) }
     .to_string_lossy()
     .into_owned()
+}
+
+/// Real uid of this process.
+pub fn current_uid() -> u32 {
+  // SAFETY: getuid cannot fail.
+  unsafe { libc::getuid() }
 }
 
 pub fn current_user() -> String {

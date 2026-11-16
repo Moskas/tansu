@@ -149,13 +149,14 @@ impl Entry {
       }
       _ => {}
     }
-    if let Some(class) = self.extension().as_deref().and_then(class_for_extension) {
-      return class;
-    }
-    if self.is_executable() {
-      FileClass::Executable
-    } else {
-      FileClass::Other
+    let by_ext = self.extension().as_deref().and_then(class_for_extension);
+    // Media and archives keep their class even when executable; anything else that is
+    // executable (scripts included) counts as executable, as in ranger.
+    match by_ext {
+      Some(c @ (FileClass::Archive | FileClass::Image | FileClass::Video | FileClass::Audio)) => c,
+      _ if self.is_executable() => FileClass::Executable,
+      Some(c) => c,
+      None => FileClass::Other,
     }
   }
 }

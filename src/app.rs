@@ -14,6 +14,7 @@ use crate::fs::{DirCount, DirListing, Entry};
 use crate::keymap::{Key, KeyResult, Keymap};
 use crate::nav::{Cursor, ScrollPos};
 use crate::preview::Preview;
+use crate::vcs::{DirVcs, FileStatus, Mark, RepoStatus, VcsRequest};
 
 const PREVIEW_CACHE_LIMIT: usize = 128;
 const INFO_TIMEOUT: Duration = Duration::from_secs(4);
@@ -29,6 +30,7 @@ pub enum Command {
   /// The pending preview is no longer wanted.
   CancelPreview,
   CountDirs(Vec<PathBuf>),
+  VcsScan(VcsRequest),
   Open(PathBuf),
 }
 
@@ -72,6 +74,8 @@ pub struct App {
   pub keymap: Keymap,
   /// `user@host` for the header.
   pub user_host: String,
+  /// Uid of the user running tansu, for ownership-dependent styling.
+  pub uid: u32,
   pub home: Option<PathBuf>,
   pub cwd: PathBuf,
   pub show_hidden: bool,
@@ -92,6 +96,11 @@ pub struct App {
   preview_cache: HashMap<PathBuf, ((i64, u64), Arc<Preview>)>,
   next_preview_id: u64,
   pending_preview: Option<u64>,
+  /// VCS context per listed directory, and repository status per root.
+  vcs_dirs: HashMap<PathBuf, DirVcs>,
+  repos: HashMap<PathBuf, Arc<RepoStatus>>,
+  /// Directories whose next VCS scan must bypass the cache (after reload).
+  vcs_force: HashSet<PathBuf>,
   commands: Vec<Command>,
 }
 
@@ -110,6 +119,7 @@ impl App {
       config,
       keymap,
       user_host,
+      uid: crate::fs::meta::current_uid(),
       home,
       cwd: start.clone(),
       show_help: false,
@@ -127,6 +137,9 @@ impl App {
       preview_cache: HashMap::new(),
       next_preview_id: 0,
       pending_preview: None,
+      vcs_dirs: HashMap::new(),
+      repos: HashMap::new(),
+      vcs_force: HashSet::new(),
       commands: Vec::new(),
     };
     app.enter_dir(start, select);
@@ -172,9 +185,63 @@ impl App {
     self.visible_entry(self.cursor.index)
   }
 
-  /// Item count of a directory, honoring the hidden-files setting.
+  /// Number of entries in a directory, hidden ones included (as ranger counts).
   pub fn dir_count(&self, path: &Path) -> Option<usize> {
-    self.counts.get(path).map(|c| c.get(self.show_hidden))
+    self.counts.get(path).map(|c| c.all)
+  }
+
+  /// Repository context for the status bar, as ranger shows it: when the selection is a
+  /// repository root, or a file in a tracked current directory. Returns the repository and
+  /// the selection's own status.
+  pub fn vcs_selection(&self) -> Option<(&RepoStatus, FileStatus)> {
+    if !self.config.vcs_aware {
+      return None;
+    }
+    let entry = self.selected()?;
+    if entry.is_dir() {
+      let repo = self.repos.get(&entry.path)?;
+      return Some((repo, repo.summary));
+    }
+    let root = self.vcs_dirs.get(&self.cwd)?.root.as_ref()?;
+    let repo = self.repos.get(root)?;
+    Some((repo, repo.status_of(&entry.path, false)))
+  }
+
+  /// VCS marks for `entry`, listed in `dir`: a remote mark for repository roots (or a
+  /// blank when siblings are roots), then the file status. Empty outside version control.
+  pub fn vcs_marks(&self, dir: &Path, entry: &Entry) -> Vec<Mark> {
+    if !self.config.vcs_aware {
+      return Vec::new();
+    }
+    let Some(info) = self.vcs_dirs.get(dir) else {
+      return Vec::new();
+    };
+    // Like ranger, nothing is tracked inside the repository's own `.git` directory.
+    if let Some(root) = &info.root
+      && dir.starts_with(root.join(".git"))
+    {
+      return Vec::new();
+    }
+    let tracked = info.root.as_ref().and_then(|r| self.repos.get(r));
+    let own = if entry.is_dir() {
+      self.repos.get(&entry.path)
+    } else {
+      None
+    };
+    let status = match (own, tracked) {
+      (Some(repo), _) => repo.summary,
+      (None, Some(repo)) => repo.status_of(&entry.path, entry.is_dir()),
+      (None, None) if info.has_repo_child => return vec![Mark::Blank, Mark::Blank],
+      (None, None) => return Vec::new(),
+    };
+    let mut marks = Vec::with_capacity(2);
+    match own {
+      Some(repo) => marks.push(Mark::Remote(repo.remote)),
+      None if info.has_repo_child => marks.push(Mark::Blank),
+      None => {}
+    }
+    marks.push(Mark::File(status));
+    marks
   }
 
   /// Name of the entry last selected in `dir`, if any.
@@ -213,6 +280,12 @@ impl App {
       Event::DirLoaded { path, result } => self.on_dir_loaded(path, result),
       Event::PreviewReady { id, path, result } => self.on_preview(id, path, result),
       Event::Counts(counts) => self.counts.extend(counts),
+      Event::Vcs { dir, info, repos } => {
+        self.vcs_dirs.insert(dir, info);
+        for repo in repos {
+          self.repos.insert(repo.root.clone(), repo);
+        }
+      }
     }
   }
 
@@ -378,6 +451,10 @@ impl App {
     self.preview_cache.clear();
     self.preview = None;
     self.cancel_preview();
+    self.vcs_force.insert(cwd.clone());
+    if let Some(parent) = &parent {
+      self.vcs_force.insert(parent.clone());
+    }
     self.request_dir(&cwd, true);
     if let Some(parent) = parent {
       self.request_dir(&parent, true);
@@ -432,6 +509,7 @@ impl App {
     match result {
       Ok(listing) => {
         self.counts.insert(path.clone(), listing.count());
+        self.request_vcs(&listing);
         let subdirs: Vec<PathBuf> = if is_cwd {
           listing
             .entries
@@ -466,6 +544,24 @@ impl App {
     if is_cwd || previewing {
       self.refresh_preview();
     }
+  }
+
+  /// Queues a VCS scan for a freshly loaded listing.
+  fn request_vcs(&mut self, listing: &DirListing) {
+    if !self.config.vcs_aware {
+      return;
+    }
+    let subdirs = listing
+      .entries
+      .iter()
+      .filter(|e| e.is_dir())
+      .map(|e| e.path.clone())
+      .collect();
+    self.commands.push(Command::VcsScan(VcsRequest {
+      dir: listing.path.clone(),
+      subdirs,
+      force: self.vcs_force.remove(&listing.path),
+    }));
   }
 
   /// Abandons an in-flight preview job, if any, so the worker stops early.
@@ -530,15 +626,17 @@ impl App {
     let Some(slot) = self.preview.as_mut().filter(|s| s.path == path) else {
       return;
     };
+    let mut scan = None;
     match result {
       Ok(preview) => {
-        if let Preview::Directory(listing) = &preview
-          && !listing.truncated
-        {
-          self.counts.insert(path.clone(), listing.count());
-          self
-            .dirs
-            .insert(path.clone(), DirState::Loaded(Arc::clone(listing)));
+        if let Preview::Directory(listing) = &preview {
+          scan = Some(Arc::clone(listing));
+          if !listing.truncated {
+            self.counts.insert(path.clone(), listing.count());
+            self
+              .dirs
+              .insert(path.clone(), DirState::Loaded(Arc::clone(listing)));
+          }
         }
         let content = Arc::new(preview);
         if !matches!(*content, Preview::Directory(_)) {
@@ -555,6 +653,9 @@ impl App {
         slot.status = PreviewStatus::Failed(msg.clone());
         self.set_error(msg);
       }
+    }
+    if let Some(listing) = scan {
+      self.request_vcs(&listing);
     }
   }
 }

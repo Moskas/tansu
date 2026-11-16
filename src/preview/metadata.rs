@@ -37,7 +37,7 @@ pub fn metadata_lines(entry: &Entry, kind_label: Option<&str>) -> Vec<(String, S
     ("Type".to_string(), kind.to_string()),
     (
       "Size".to_string(),
-      format!("{} ({} bytes)", human_size(entry.size), entry.size),
+      format!("{} ({} bytes)", human_size(entry.size, false), entry.size),
     ),
     (
       "Mode".to_string(),

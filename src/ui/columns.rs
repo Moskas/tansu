@@ -1,17 +1,21 @@
 //! The bordered body with parent, current and preview columns.
 
+use std::path::Path;
+
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Margin, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Widget};
 
 use super::text::{display_width, truncate};
 use super::{entry_style, icons, layout};
 use crate::app::{App, DirState, PreviewStatus};
+use crate::config::Theme;
 use crate::fs::meta::human_size;
 use crate::fs::{Entry, EntryKind};
 use crate::nav::passive_offset;
 use crate::preview::Preview;
+use crate::vcs::{FileStatus, Mark, RemoteStatus};
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &App) {
   if area.width < 3 || area.height < 3 {
@@ -58,19 +62,19 @@ fn render_parent(buf: &mut Buffer, area: Rect, app: &App) {
         .filter(|e| app.is_visible(e) || e.path == app.cwd)
         .collect();
       let selected = entries.iter().position(|e| e.path == app.cwd);
-      draw_list(buf, area, &entries, selected, app);
+      draw_list(buf, area, parent, &entries, selected, app);
     }
-    Some(DirState::Failed(msg)) => placeholder(buf, area, msg, error_style(app)),
-    _ => {}
+    Some(DirState::Failed(_)) => placeholder(buf, area, "not accessible", alert_style(app)),
+    _ => placeholder(buf, area, "...", Style::new().fg(app.config.theme.fg.0)),
   }
 }
 
 fn render_current(buf: &mut Buffer, area: Rect, app: &App) {
   if app.visible_len() == 0 {
     match app.dir_state(&app.cwd) {
-      Some(DirState::Failed(msg)) => placeholder(buf, area, msg, error_style(app)),
-      Some(DirState::Loaded(_)) => placeholder(buf, area, "empty", error_style(app)),
-      _ => placeholder(buf, area, "loading...", dim_style(app)),
+      Some(DirState::Failed(_)) => placeholder(buf, area, "not accessible", alert_style(app)),
+      Some(DirState::Loaded(_)) => placeholder(buf, area, "empty", alert_style(app)),
+      _ => placeholder(buf, area, "...", Style::new().fg(app.config.theme.fg.0)),
     }
     return;
   }
@@ -81,12 +85,14 @@ fn render_current(buf: &mut Buffer, area: Rect, app: &App) {
       break;
     };
     let info = entry_info(entry, app);
+    let marks = app.vcs_marks(&app.cwd, entry);
     draw_row(
       buf,
       Rect::new(area.x, area.y + row, area.width, 1),
       entry,
       i == cursor.index,
       info.as_deref(),
+      &marks,
       app,
     );
   }
@@ -99,7 +105,8 @@ fn render_preview(buf: &mut Buffer, area: Rect, app: &App) {
   let theme = &app.config.theme;
   let preview = match &slot.status {
     PreviewStatus::Loading => return,
-    PreviewStatus::Failed(msg) => return placeholder(buf, area, msg, error_style(app)),
+    // The full error is already in the status line.
+    PreviewStatus::Failed(_) => return placeholder(buf, area, "not accessible", alert_style(app)),
     PreviewStatus::Ready(p) => p,
   };
   match &**preview {
@@ -122,13 +129,13 @@ fn render_preview(buf: &mut Buffer, area: Rect, app: &App) {
         .filter(|e| app.is_visible(e))
         .collect();
       if entries.is_empty() {
-        return placeholder(buf, area, "empty", error_style(app));
+        return placeholder(buf, area, "empty", alert_style(app));
       }
       let selected = app
         .remembered(&listing.path)
         .and_then(|name| entries.iter().position(|e| e.name == name))
         .unwrap_or(0);
-      draw_list(buf, area, &entries, Some(selected), app);
+      draw_list(buf, area, &listing.path, &entries, Some(selected), app);
     }
     Preview::Metadata(rows) => {
       let key_w = rows
@@ -151,17 +158,37 @@ fn render_preview(buf: &mut Buffer, area: Rect, app: &App) {
   }
 }
 
-/// Right-aligned detail: item count for directories, size for regular files.
-fn entry_info(entry: &Entry, app: &App) -> Option<String> {
-  match entry.kind {
-    EntryKind::Dir => app.dir_count(&entry.path).map(|n| n.to_string()),
-    EntryKind::File => Some(human_size(entry.size)),
-    _ => None,
+/// Ranger's info string: ` 15` for directories, ` 407 B` for files, `->` prefixed for
+/// symlinks, and `dev` / `fifo` / `sock` for special files.
+pub fn entry_info(entry: &Entry, app: &App) -> Option<String> {
+  let info = match entry.kind {
+    EntryKind::Dir => app.dir_count(&entry.path).map(|n| format!(" {n}")),
+    EntryKind::File => Some(format!(
+      " {}",
+      human_size(entry.size, app.config.binary_size_prefix)
+    )),
+    EntryKind::CharDevice | EntryKind::BlockDevice => Some("dev".to_string()),
+    EntryKind::Fifo => Some("fifo".to_string()),
+    EntryKind::Socket => Some("sock".to_string()),
+    EntryKind::Unknown => None,
+  };
+  if entry.is_symlink() {
+    Some(format!("->{}", info.unwrap_or_default()))
+  } else {
+    info
   }
 }
 
-/// Draws a list that is shown but not navigated (parent, directory preview).
-fn draw_list(buf: &mut Buffer, area: Rect, entries: &[&Entry], selected: Option<usize>, app: &App) {
+/// Draws a list that is shown but not navigated (parent, directory preview). `dir` is the
+/// directory the entries belong to, used for VCS lookups.
+fn draw_list(
+  buf: &mut Buffer,
+  area: Rect,
+  dir: &Path,
+  entries: &[&Entry],
+  selected: Option<usize>,
+  app: &App,
+) {
   let height = area.height as usize;
   let offset = passive_offset(selected.unwrap_or(0), entries.len(), height);
   for (row, (i, entry)) in entries
@@ -171,24 +198,30 @@ fn draw_list(buf: &mut Buffer, area: Rect, entries: &[&Entry], selected: Option<
     .take(height)
     .enumerate()
   {
+    let marks = app.vcs_marks(dir, entry);
     draw_row(
       buf,
       Rect::new(area.x, area.y + row as u16, area.width, 1),
       entry,
       selected == Some(i),
       None,
+      &marks,
       app,
     );
   }
 }
 
-/// One entry row: `icon name~ ... info `. The highlighted row is filled edge to edge.
+/// One entry row, laid out like ranger: a one-cell gutter (reserved for tag markers),
+/// `icon name~`, padding, the info string, and VCS marks flush with the right edge.
+/// Info and marks are dropped when they would leave fewer than three cells for the name.
+/// The highlighted row is filled edge to edge.
 fn draw_row(
   buf: &mut Buffer,
   row: Rect,
   entry: &Entry,
   highlighted: bool,
   info: Option<&str>,
+  marks: &[Mark],
   app: &App,
 ) {
   let theme = &app.config.theme;
@@ -196,26 +229,71 @@ fn draw_row(
   if width == 0 {
     return;
   }
+  let base = entry_style(entry, theme);
   let style = if highlighted {
-    let s = Style::new().fg(theme.cursor_fg.0).bg(theme.cursor_bg.0);
+    let s = base.fg(theme.cursor_fg.0).bg(theme.cursor_bg.0);
     buf.set_style(row, s);
     s
   } else {
-    entry_style(entry, theme)
+    base
   };
-  let prefix = format!("{} ", icons::icon(entry, app.config.icons));
-  let prefix_w = display_width(&prefix);
-  // `info` is drawn as " info " so it never touches the name or the separator.
-  let info_w = info.map_or(1, |s| display_width(s) + 2);
-  let name_room = width.saturating_sub(prefix_w + info_w);
-  let name = truncate(&entry.name, name_room);
-  buf.set_stringn(row.x, row.y, format!("{prefix}{name}"), width, style);
-  if let Some(info) = info
-    && width >= prefix_w + info_w
-  {
-    let x = row.x + (width - info_w + 1) as u16;
-    buf.set_stringn(x, row.y, info, info_w - 2, style);
+
+  let mut space = width;
+  let gutter = usize::from(space > 3);
+  space -= gutter;
+
+  let show_marks = !marks.is_empty() && space > marks.len() + 2;
+  if show_marks {
+    space -= marks.len();
   }
+  let sep = usize::from(show_marks);
+  let info = info.filter(|s| space > display_width(s) + sep + 2);
+  let info_w = info.map_or(0, |s| display_width(s) + sep);
+  space -= info_w;
+
+  let title = format!("{} {}", icons::icon(entry, app.config.icons), entry.name);
+  let title = truncate(&title, space);
+  buf.set_stringn(row.x + gutter as u16, row.y, &title, space, style);
+
+  let right_x = row.x + (width - info_w - if show_marks { marks.len() } else { 0 }) as u16;
+  if let Some(info) = info {
+    buf.set_stringn(right_x, row.y, info, info_w, style);
+  }
+  if show_marks {
+    let start = right_x + info_w as u16;
+    for (x, &mark) in (start..).zip(marks) {
+      let mark_style = if highlighted {
+        style
+      } else {
+        Style::new()
+          .fg(mark_color(mark, theme))
+          .remove_modifier(Modifier::BOLD)
+      };
+      buf.set_stringn(x, row.y, mark.symbol().to_string(), 1, mark_style);
+    }
+  }
+}
+
+/// VCS mark colors, following ranger's default colorscheme.
+pub fn mark_color(mark: Mark, theme: &Theme) -> Color {
+  let c = match mark {
+    Mark::File(s) => match s {
+      FileStatus::Conflict => theme.vcs_conflict,
+      FileStatus::Untracked => theme.vcs_untracked,
+      FileStatus::Deleted | FileStatus::Changed | FileStatus::Unknown => theme.vcs_changed,
+      FileStatus::Staged => theme.vcs_staged,
+      FileStatus::Ignored => theme.vcs_ignored,
+      FileStatus::Sync => theme.vcs_sync,
+    },
+    Mark::Remote(r) => match r {
+      RemoteStatus::Sync | RemoteStatus::None => theme.vcs_sync,
+      RemoteStatus::Ahead => theme.vcs_ahead,
+      RemoteStatus::Behind => theme.vcs_behind,
+      RemoteStatus::Diverged => theme.vcs_diverged,
+    },
+    Mark::Blank => theme.fg,
+  };
+  c.0
 }
 
 fn placeholder(buf: &mut Buffer, area: Rect, text: &str, style: Style) {
@@ -231,10 +309,9 @@ fn placeholder(buf: &mut Buffer, area: Rect, text: &str, style: Style) {
   );
 }
 
-fn error_style(app: &App) -> Style {
-  Style::new().fg(app.config.theme.error.0)
-}
-
-fn dim_style(app: &App) -> Style {
-  Style::new().fg(app.config.theme.dim.0)
+/// Ranger draws "empty" and "not accessible" on a red background.
+fn alert_style(app: &App) -> Style {
+  Style::new()
+    .fg(app.config.theme.fg.0)
+    .bg(app.config.theme.error.0)
 }
