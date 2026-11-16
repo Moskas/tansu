@@ -318,7 +318,7 @@ fn draw_row(
   }
   let base = entry_style(entry, theme);
   let style = if highlighted {
-    let s = base.fg(theme.cursor_fg.0).bg(theme.cursor_bg.0);
+    let s = cursor_style(base, theme);
     buf.set_style(row, s);
     s
   } else {
@@ -357,6 +357,20 @@ fn draw_row(
           .remove_modifier(Modifier::BOLD)
       };
       buf.set_stringn(x, row.y, mark.symbol().to_string(), 1, mark_style);
+    }
+  }
+}
+
+/// The selected row's style. Like ranger, the entry's own style in reverse video (its color
+/// becomes the background) unless the theme sets cursor colors, which replace one side each.
+fn cursor_style(base: Style, theme: &Theme) -> Style {
+  match (theme.cursor_fg, theme.cursor_bg) {
+    (None, None) => base.add_modifier(Modifier::REVERSED),
+    (fg, bg) => {
+      let entry = base.fg.unwrap_or(theme.fg.0);
+      base
+        .fg(fg.map_or(entry, |c| c.0))
+        .bg(bg.map_or(entry, |c| c.0))
     }
   }
 }

@@ -165,8 +165,10 @@ pub struct Theme {
   pub document: ThemeColor,
   pub code: ThemeColor,
   pub special: ThemeColor,
-  pub cursor_fg: ThemeColor,
-  pub cursor_bg: ThemeColor,
+  /// Selected-row colors. Unset, the row is drawn in reverse video like ranger: the entry's
+  /// color becomes the background. Setting either one overrides that side only.
+  pub cursor_fg: Option<ThemeColor>,
+  pub cursor_bg: Option<ThemeColor>,
   pub status_fg: ThemeColor,
   pub status_perms: ThemeColor,
   /// Permissions of entries owned by another user.
@@ -208,8 +210,8 @@ impl Default for Theme {
       document: hex(0xebdbb2),
       code: hex(0xebdbb2),
       special: hex(0xd79921),
-      cursor_fg: hex(0x282828),
-      cursor_bg: hex(0x7c9f88),
+      cursor_fg: None,
+      cursor_bg: None,
       status_fg: hex(0xd5c4a1),
       status_perms: hex(0x8ec07c),
       status_perms_other: hex(0xd3869b),

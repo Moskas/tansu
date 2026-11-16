@@ -366,7 +366,11 @@ fn partial_config_overrides_only_given_fields() {
     cfg.preview.max_bytes,
     tansu::preview::PreviewLimits::default().max_bytes
   );
-  assert_eq!(cfg.theme.cursor_bg.0, ratatui::style::Color::Rgb(255, 0, 0));
+  assert_eq!(
+    cfg.theme.cursor_bg.map(|c| c.0),
+    Some(ratatui::style::Color::Rgb(255, 0, 0))
+  );
+  assert_eq!(cfg.theme.cursor_fg, None);
   assert_eq!(cfg.theme.directory.0, ratatui::style::Color::LightBlue);
   assert_eq!(cfg.theme.fg, tansu::config::Theme::default().fg);
   assert_eq!(

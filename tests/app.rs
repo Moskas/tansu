@@ -9,6 +9,7 @@ use std::time::Duration;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::style::Modifier;
 use tempfile::TempDir;
 
 use tansu::app::{App, Command, PreviewStatus};
@@ -538,18 +539,35 @@ fn no_markers_outside_repositories() {
 #[test]
 fn snapshot_highlights_cursor_rows() {
   let (_tmp, work) = fixture();
-  let app = new_app(&work);
-  let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
-  terminal.draw(|f| tansu::ui::render(f, &app)).unwrap();
-  let buf = terminal.backend().buffer();
-  let cursor_bg = app.config.theme.cursor_bg.0;
-  // Parent row for `work`, current row for `alpha`, preview row for `a.txt`, edge to edge.
-  for (x0, x1) in [(1, 8), (9, 30), (31, 59)] {
+  let mut app = new_app(&work);
+  let theme = app.config.theme.clone();
+  let draw = |app: &App| {
+    let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
+    terminal.draw(|f| tansu::ui::render(f, app)).unwrap();
+    terminal.backend().buffer().clone()
+  };
+  // Like ranger: the selected rows (parent `work`, current `alpha`, preview `a.txt`) are the
+  // entry's own colors in reverse video, edge to edge.
+  let buf = draw(&app);
+  for (x0, x1, color) in [
+    (1, 8, theme.directory),
+    (9, 30, theme.directory),
+    (31, 59, theme.file),
+  ] {
     for x in x0..x1 {
-      assert_eq!(buf[(x, 2)].bg, cursor_bg, "cell ({x}, 2)");
+      let cell = &buf[(x, 2)];
+      assert!(cell.modifier.contains(Modifier::REVERSED), "cell ({x}, 2)");
+      assert_eq!(cell.fg, color.0, "cell ({x}, 2)");
     }
   }
-  assert_ne!(buf[(9, 3)].bg, cursor_bg);
+  assert!(!buf[(9, 3)].modifier.contains(Modifier::REVERSED));
+
+  // A configured text color keeps the entry color as the background.
+  app.config.theme.cursor_fg = Some(theme.fg);
+  let buf = draw(&app);
+  let cell = &buf[(12, 2)];
+  assert!(!cell.modifier.contains(Modifier::REVERSED));
+  assert_eq!((cell.fg, cell.bg), (theme.fg.0, theme.directory.0));
 }
 
 #[test]
