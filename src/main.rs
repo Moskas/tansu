@@ -1,0 +1,122 @@
+use std::path::PathBuf;
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
+
+use anyhow::{Context, Result, bail};
+
+use tansu::app::App;
+use tansu::config::Config;
+use tansu::event::{self, Event};
+use tansu::fs::meta;
+use tansu::keymap::Keymap;
+use tansu::preview::PreviewRegistry;
+use tansu::runtime::Runtime;
+use tansu::terminal::TerminalGuard;
+use tansu::ui;
+
+const TICK: Duration = Duration::from_millis(250);
+
+const USAGE: &str = "usage: tansu [PATH]
+
+Opens a three-column file manager at PATH (default: current directory).
+Press ? inside tansu for key bindings.";
+
+fn main() -> Result<()> {
+  let mut args = std::env::args_os().skip(1);
+  let arg = args.next();
+  if args.next().is_some() {
+    bail!("too many arguments\n\n{USAGE}");
+  }
+  match arg.as_ref().and_then(|a| a.to_str()) {
+    Some("-h" | "--help") => {
+      println!("{USAGE}");
+      return Ok(());
+    }
+    Some("-V" | "--version") => {
+      println!("tansu {}", env!("CARGO_PKG_VERSION"));
+      return Ok(());
+    }
+    _ => {}
+  }
+  let (start, select) = resolve_start(arg.map(PathBuf::from))?;
+
+  meta::init_timezone();
+  let (config, mut warnings) = Config::load(Config::default_path().as_deref());
+  let (keymap, key_warnings) = Keymap::with_overrides(&config.keys);
+  warnings.extend(key_warnings);
+  let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
+
+  let mut app = App::new(config, keymap, start, select, meta::user_at_host(), home);
+  if let Some(first) = warnings.first() {
+    let more = warnings.len() - 1;
+    let suffix = if more > 0 {
+      format!(" (+{more} more)")
+    } else {
+      String::new()
+    };
+    app.set_error(format!("{first}{suffix}"));
+  }
+
+  let mut guard = TerminalGuard::new()?;
+  let (tx, rx) = mpsc::channel();
+  event::spawn_input_thread(tx.clone());
+  let mut runtime = Runtime::new(
+    tx,
+    Arc::new(PreviewRegistry::with_defaults()),
+    app.config.preview,
+    app.config.opener.clone(),
+  );
+
+  let size = guard.terminal.size()?;
+  app.set_size(size.width, size.height);
+
+  loop {
+    for cmd in app.take_commands() {
+      if let Some(err) = runtime.execute(cmd) {
+        app.set_error(err);
+      }
+    }
+    guard.terminal.draw(|f| ui::render(f, &app))?;
+
+    let ev = match rx.recv_timeout(TICK) {
+      Ok(ev) => ev,
+      Err(mpsc::RecvTimeoutError::Timeout) => Event::Tick,
+      Err(mpsc::RecvTimeoutError::Disconnected) => break,
+    };
+    app.handle_event(ev);
+    // Apply everything already queued before redrawing, so bursts (key repeat, many
+    // background results) cost one frame instead of one per event.
+    while let Ok(ev) = rx.try_recv() {
+      app.handle_event(ev);
+      if app.should_quit {
+        break;
+      }
+    }
+    if app.should_quit {
+      break;
+    }
+  }
+  Ok(())
+}
+
+/// Returns the directory to open and, if `path` is a file, its name to select.
+fn resolve_start(path: Option<PathBuf>) -> Result<(PathBuf, Option<String>)> {
+  let path = match path {
+    Some(p) => p,
+    None => std::env::current_dir().context("reading current directory")?,
+  };
+  let path = path
+    .canonicalize()
+    .with_context(|| format!("cannot open {}", path.display()))?;
+  if path.is_dir() {
+    return Ok((path, None));
+  }
+  let name = path
+    .file_name()
+    .map(|n| tansu::fs::entry::sanitize(&n.to_string_lossy()));
+  let parent = path
+    .parent()
+    .map(PathBuf::from)
+    .unwrap_or_else(|| "/".into());
+  Ok((parent, name))
+}

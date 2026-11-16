@@ -1,0 +1,21 @@
+[package]
+name = "tansu"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A terminal file manager with Miller columns, inspired by ranger"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+crossterm = "0.29"
+directories = "6"
+libc = "0.2"
+ratatui = "0.30"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+toml = "1"
+unicode-width = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
