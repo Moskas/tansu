@@ -46,7 +46,7 @@ fn natural_order_is_case_insensitive_with_stable_tiebreak() {
 #[test]
 fn cursor_scrolls_to_keep_selection_visible() {
   let mut c = Cursor::default();
-  c.move_by(1, 10, 4);
+  c.move_by(1, 10, 4, 0);
   assert_eq!(
     c,
     Cursor {
@@ -54,7 +54,7 @@ fn cursor_scrolls_to_keep_selection_visible() {
       offset: 0
     }
   );
-  c.set(6, 10, 4);
+  c.set(6, 10, 4, 0);
   assert_eq!(
     c,
     Cursor {
@@ -62,7 +62,7 @@ fn cursor_scrolls_to_keep_selection_visible() {
       offset: 3
     }
   );
-  c.move_by(-5, 10, 4);
+  c.move_by(-5, 10, 4, 0);
   assert_eq!(
     c,
     Cursor {
@@ -70,7 +70,7 @@ fn cursor_scrolls_to_keep_selection_visible() {
       offset: 1
     }
   );
-  c.move_by(-100, 10, 4);
+  c.move_by(-100, 10, 4, 0);
   assert_eq!(
     c,
     Cursor {
@@ -78,7 +78,7 @@ fn cursor_scrolls_to_keep_selection_visible() {
       offset: 0
     }
   );
-  c.move_by(100, 10, 4);
+  c.move_by(100, 10, 4, 0);
   assert_eq!(
     c,
     Cursor {
@@ -94,7 +94,7 @@ fn cursor_clamps_when_list_shrinks_or_viewport_grows() {
     index: 9,
     offset: 6,
   };
-  c.fix_offset(5, 4);
+  c.fix_offset(5, 4, 0);
   assert_eq!(
     c,
     Cursor {
@@ -102,7 +102,7 @@ fn cursor_clamps_when_list_shrinks_or_viewport_grows() {
       offset: 1
     }
   );
-  c.fix_offset(5, 10);
+  c.fix_offset(5, 10, 0);
   assert_eq!(
     c,
     Cursor {
@@ -110,7 +110,7 @@ fn cursor_clamps_when_list_shrinks_or_viewport_grows() {
       offset: 0
     }
   );
-  c.set(3, 0, 10);
+  c.set(3, 0, 10, 0);
   assert_eq!(c, Cursor::default());
 }
 
@@ -572,4 +572,36 @@ fn non_sgr_escapes_and_control_characters_are_neutralized() {
   let text: String = lines[0].iter().map(|s| s.text.as_str()).collect();
   assert_eq!(text, "abcd?   e");
   assert!(!text.contains('\x1b'));
+}
+
+#[test]
+fn cursor_keeps_scroll_margin_like_ranger() {
+  // 20 rows with a margin of 3: the view starts moving once the cursor passes row 16.
+  let mut c = Cursor::default();
+  c.set(16, 100, 20, 3);
+  assert_eq!(c.offset, 0);
+  c.move_by(1, 100, 20, 3);
+  assert_eq!((c.index, c.offset), (17, 1));
+  // Moving back up keeps the view until the cursor is within 3 rows of the top.
+  c.set(4, 100, 20, 3);
+  assert_eq!(c.offset, 1);
+  c.move_by(-1, 100, 20, 3);
+  assert_eq!((c.index, c.offset), (3, 0));
+  // The ends of the list still clamp.
+  c.set(99, 100, 20, 3);
+  assert_eq!(c.offset, 80);
+}
+
+#[test]
+fn cursor_is_centered_when_the_view_is_shorter_than_twice_the_margin() {
+  // 13 rows and ranger's default margin of 8, as in a small terminal.
+  let mut c = Cursor::default();
+  c.set(12, 246, 13, 8);
+  assert_eq!(c.offset, 6, "cursor on the middle row");
+  c.move_by(1, 246, 13, 8);
+  assert_eq!(c.offset, 7);
+  c.set(2, 246, 13, 8);
+  assert_eq!(c.offset, 0, "no scrolling above the first entry");
+  c.set(245, 246, 13, 8);
+  assert_eq!(c.offset, 233, "no empty space below the last entry");
 }

@@ -130,6 +130,10 @@ vcs_aware = true
 # Sizes in base 1024 with Ki/Mi units instead of base 1000 with k/M.
 binary_size_prefix = false
 
+# Rows kept visible above and below the cursor while scrolling. When the column is
+# shorter than twice this, the cursor stays centered (ranger's scroll_offset).
+scroll_offset = 8
+
 # Draw image previews with the terminal's graphics protocol.
 preview_images = true
 

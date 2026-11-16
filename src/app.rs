@@ -341,7 +341,9 @@ impl App {
   pub fn set_size(&mut self, width: u16, height: u16) {
     self.width = width;
     self.rows = crate::ui::layout::body_rows(height);
-    self.cursor.fix_offset(self.visible.len(), self.rows);
+    self
+      .cursor
+      .fix_offset(self.visible.len(), self.rows, self.config.scroll_offset);
     // Image previews are encoded for the column size, so a new size needs a new encoding.
     if self
       .preview
@@ -429,7 +431,10 @@ impl App {
 
   fn move_cursor(&mut self, delta: isize) {
     let before = self.cursor.index;
-    self.cursor.move_by(delta, self.visible.len(), self.rows);
+    let margin = self.config.scroll_offset;
+    self
+      .cursor
+      .move_by(delta, self.visible.len(), self.rows, margin);
     if self.cursor.index != before {
       self.refresh_preview();
     }
@@ -437,7 +442,12 @@ impl App {
 
   fn set_cursor(&mut self, index: usize) {
     let before = self.cursor.index;
-    self.cursor.set(index, self.visible.len(), self.rows);
+    self.cursor.set(
+      index,
+      self.visible.len(),
+      self.rows,
+      self.config.scroll_offset,
+    );
     if self.cursor.index != before {
       self.refresh_preview();
     }
@@ -559,7 +569,12 @@ impl App {
           .position(|&i| listing.entries[i].name == name)
       })
       .unwrap_or(self.cursor.index);
-    self.cursor.set(index, self.visible.len(), self.rows);
+    self.cursor.set(
+      index,
+      self.visible.len(),
+      self.rows,
+      self.config.scroll_offset,
+    );
   }
 
   fn on_dir_loaded(&mut self, path: PathBuf, result: Result<DirListing, String>) {

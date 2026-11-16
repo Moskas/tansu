@@ -8,23 +8,27 @@ pub struct Cursor {
 }
 
 impl Cursor {
-  /// Places the cursor at `index` (clamped) and scrolls the minimum needed to show it.
-  pub fn set(&mut self, index: usize, len: usize, height: usize) {
+  /// Places the cursor at `index` (clamped) and scrolls as needed, keeping `margin` rows of
+  /// context around it (see [`Cursor::fix_offset`]).
+  pub fn set(&mut self, index: usize, len: usize, height: usize, margin: usize) {
     if len == 0 {
       *self = Cursor::default();
       return;
     }
     self.index = index.min(len - 1);
-    self.fix_offset(len, height);
+    self.fix_offset(len, height, margin);
   }
 
-  pub fn move_by(&mut self, delta: isize, len: usize, height: usize) {
+  pub fn move_by(&mut self, delta: isize, len: usize, height: usize, margin: usize) {
     let target = self.index.saturating_add_signed(delta);
-    self.set(target, len, height);
+    self.set(target, len, height, margin);
   }
 
-  /// Keeps the cursor inside the viewport and avoids empty space below the last entry.
-  pub fn fix_offset(&mut self, len: usize, height: usize) {
+  /// Scrolls like ranger's `scroll_offset`: the viewport moves only when the cursor comes
+  /// within `margin` rows of its top or bottom edge, and when the viewport is too short for
+  /// that margin on both sides, the cursor is kept centered. The list never scrolls past its
+  /// ends, so there is no empty space below the last entry.
+  pub fn fix_offset(&mut self, len: usize, height: usize, margin: usize) {
     if len == 0 {
       *self = Cursor::default();
       return;
@@ -34,12 +38,20 @@ impl Cursor {
       self.offset = self.index;
       return;
     }
-    if self.index < self.offset {
-      self.offset = self.index;
-    } else if self.index >= self.offset + height {
-      self.offset = self.index + 1 - height;
+    let max_offset = len.saturating_sub(height);
+    if height / 2 < margin {
+      self.offset = self.index.saturating_sub(height / 2).min(max_offset);
+      return;
     }
-    self.offset = self.offset.min(len.saturating_sub(height));
+    // Rows that must stay visible above and below the cursor.
+    let above = margin;
+    let below = height - 1 - margin;
+    if self.index < self.offset + above {
+      self.offset = self.index.saturating_sub(above);
+    } else if self.index > self.offset + below {
+      self.offset = self.index - below;
+    }
+    self.offset = self.offset.min(max_offset);
   }
 }
 

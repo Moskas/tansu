@@ -25,6 +25,9 @@ pub struct Config {
   pub vcs_aware: bool,
   /// Sizes in base 1024 with `Ki`/`Mi` units instead of base 1000 with `k`/`M`.
   pub binary_size_prefix: bool,
+  /// Rows of context kept above and below the cursor while scrolling (like ranger's
+  /// `scroll_offset`). When the list is too short for that, the cursor stays centered.
+  pub scroll_offset: usize,
   /// Show images in the preview column with the terminal's graphics protocol (like
   /// ranger's `preview_images`).
   pub preview_images: bool,
@@ -45,6 +48,7 @@ impl Default for Config {
       column_ratios: [1, 3, 4],
       vcs_aware: true,
       binary_size_prefix: false,
+      scroll_offset: 8,
       preview_images: true,
       preview: PreviewLimits::default(),
       highlight: HighlightConfig::default(),
