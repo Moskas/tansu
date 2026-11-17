@@ -1222,3 +1222,75 @@ fn shell_commands_run_in_the_given_directory() {
   let other = tempfile::tempdir().unwrap();
   assert!(!run_shell_silent(&script, other.path()).unwrap().success());
 }
+
+mod search {
+  use tansu::search::Pattern;
+
+  fn score(pattern: &str, name: &str) -> Option<i64> {
+    Pattern::parse(pattern).unwrap().score(name)
+  }
+
+  #[test]
+  fn empty_pattern_is_none() {
+    assert_eq!(Pattern::parse(""), None);
+  }
+
+  #[test]
+  fn wildcards_match_the_whole_name() {
+    assert!(Pattern::parse("*.rs").unwrap().is_glob());
+    assert!(score("*.rs", "main.rs").is_some());
+    assert!(score("*.rs", "main.rs.bak").is_none());
+    assert!(score("ma*", "main.rs").is_some());
+    assert!(score("ma*", "xmain.rs").is_none());
+    assert!(score("*ai*", "main.rs").is_some());
+    assert!(score("file?.txt", "file2.txt").is_some());
+    assert!(score("file?.txt", "file10.txt").is_none());
+    assert!(score("*", "").is_some());
+    assert!(score("a*b*c", "aXbYbZc").is_some());
+    assert!(score("a*b*c", "aXbYcZ").is_none());
+  }
+
+  #[test]
+  fn backslash_makes_wildcards_literal() {
+    assert!(!Pattern::parse("a\\*").unwrap().is_glob());
+    assert!(score("why\\?", "why?").is_some());
+    assert!(score("why\\?*", "why?.md").is_some());
+    assert!(score("why\\?*", "whyX.md").is_none());
+  }
+
+  #[test]
+  fn fuzzy_matches_chars_in_order() {
+    assert!(!Pattern::parse("mrs").unwrap().is_glob());
+    assert!(score("mrs", "main.rs").is_some());
+    assert!(score("rsm", "main.rs").is_none());
+    assert!(score("toolong", "tool").is_none());
+  }
+
+  #[test]
+  fn fuzzy_prefers_consecutive_and_word_start_matches() {
+    let better = |p: &str, a: &str, b: &str| {
+      let (sa, sb) = (score(p, a), score(p, b));
+      assert!(sa > sb, "`{p}`: {a} ({sa:?}) should beat {b} ({sb:?})");
+    };
+    better("main", "main.rs", "my_animation.rs");
+    better("mrs", "main.rs", "mirrors");
+    better("ct", "config.toml", "cat");
+    better("readme", "README.md", "reader_made.txt");
+  }
+
+  #[test]
+  fn smart_case() {
+    assert!(score("readme", "README.md").is_some());
+    assert!(score("README", "readme.md").is_none());
+    assert!(score("*.MD", "README.md").is_none());
+    assert!(score("*.md", "README.MD").is_some());
+  }
+
+  #[test]
+  fn non_ascii_names() {
+    assert!(score("歌", "好きな歌のタイトル.mp3").is_some());
+    assert!(score("*タイトル*", "好きな歌のタイトル.mp3").is_some());
+    assert!(score("ÉTÉ", "été.txt").is_none());
+    assert!(score("été", "ÉTÉ.txt").is_some());
+  }
+}

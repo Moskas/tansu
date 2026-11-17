@@ -121,6 +121,8 @@ cargo test
 | `y.`                        | Yank name without extension   |
 | `yf`                        | Yank the selection as a file  |
 | `!`, `s`                    | Run a shell command           |
+| `/`                         | Search (opens `:search `)     |
+| `n` / `N`                   | Next / previous search match  |
 | `R`                         | Reload directory              |
 | `?`                         | Toggle help overlay           |
 | `:`                         | Open the command line         |
@@ -220,6 +222,7 @@ or `<C-c>` cancels, and `<BS>` on an empty line closes it. Editing keys: `<Left>
 | `rename`                           | Open the command line as `rename <selected name>`    |
 | `shell [-flags] <command>`         | Run a command line through the shell                 |
 | `shell`                            | Open the command line as `shell `                    |
+| `search <pattern>`                 | Select the best match in the current directory       |
 | `sort <type>`                      | Sort by `name`, `size`, `mtime` or `ctime`           |
 | `<action>`                         | Any action name below, e.g. `open`, `reload`, `quit` |
 | `q`                                | Quit                                                 |
@@ -234,6 +237,18 @@ instead of entering it.
 `rename` takes the rest of the line as the new name, so names may contain spaces. It refuses
 to replace an existing entry, and the renamed entry stays selected. `r` opens the command line
 as `rename <selected name>`.
+
+`search` matches the names of the visible entries in the current directory. `/` opens the
+command line as `search `, like `/` in vim and ranger, and `n` / `N` step through the matches,
+wrapping around. The last pattern is kept when changing directories.
+
+- A pattern with `*` (any run of characters) or `?` (one character) must match the whole
+  name: `*.rs`, `file?.txt`, `test_*`. `\` makes the next character literal (`why\?`).
+- Any other pattern is fuzzy: its characters must appear in the name in order, not
+  necessarily together (`mrs` matches `main.rs`). Matches are ranked as in fzf, preferring
+  consecutive characters and the starts of words; `search` selects the best one and `n` goes
+  on to the next best.
+- Case is ignored unless the pattern contains an uppercase letter (vim's smartcase).
 
 `shell` works like ranger's. The rest of the line is run with `$SHELL -c` (`/bin/sh` when
 `$SHELL` is fish or unset) in the current directory, so pipes, quoting and globs work as in a
@@ -402,8 +417,9 @@ vcs_commit = "#fabd2f"
 
 Action names: `move_up`, `move_down`, `move_top`, `move_bottom`, `half_page_up`,
 `half_page_down`, `page_up`, `page_down`, `preview_up`, `preview_down`, `go_parent`, `open`,
-`go_home`, `toggle_hidden`, `toggle_metadata`, `rename`, `shell`, `sort name`, `sort size`, `sort mtime`, `sort ctime`,
-`copy`, `cut`, `paste`, `paste_overwrite`, `clear_buffer`, `yank_path`, `yank_dir`, `yank_name`,
+`go_home`, `toggle_hidden`, `toggle_metadata`, `rename`, `shell`, `search`, `search_next`,
+`search_prev`, `sort name`, `sort size`, `sort mtime`, `sort ctime`, `copy`, `cut`, `paste`,
+`paste_overwrite`, `clear_buffer`, `yank_path`, `yank_dir`, `yank_name`,
 `yank_name_without_ext`, `yank_file`, `reload`, `toggle_help`, `command_line`, `quit`.
 
 ## Architecture
@@ -428,6 +444,7 @@ with events.
 | `nav.rs`      | Cursor and scroll offset math                                      |
 | `opener.rs`   | Detached and foreground program launching                          |
 | `console.rs`  | Command-line editor and command parser                             |
+| `search.rs`   | Search patterns: wildcards, fuzzy matching and ranking             |
 | `clipboard.rs`| System clipboard through wl-copy, xclip, xsel or OSC 52            |
 | `fs/`         | Entries, listing, natural sort, metadata, paste ops (no UI types)  |
 | `preview/`    | `Previewer` trait, registry, built-in previewers, ANSI parsing     |

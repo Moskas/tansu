@@ -38,6 +38,9 @@ pub enum Action {
   YankNameWithoutExt,
   YankFile,
   Shell,
+  Search,
+  SearchNext,
+  SearchPrev,
   Reload,
   ToggleHelp,
   CommandLine,
@@ -45,7 +48,7 @@ pub enum Action {
 }
 
 impl Action {
-  pub const ALL: [Action; 38] = [
+  pub const ALL: [Action; 41] = [
     Action::MoveUp,
     Action::MoveDown,
     Action::MoveTop,
@@ -80,6 +83,9 @@ impl Action {
     Action::YankNameWithoutExt,
     Action::YankFile,
     Action::Shell,
+    Action::Search,
+    Action::SearchNext,
+    Action::SearchPrev,
     Action::Reload,
     Action::ToggleHelp,
     Action::CommandLine,
@@ -123,6 +129,9 @@ impl Action {
       Action::YankNameWithoutExt => "yank_name_without_ext",
       Action::YankFile => "yank_file",
       Action::Shell => "shell",
+      Action::Search => "search",
+      Action::SearchNext => "search_next",
+      Action::SearchPrev => "search_prev",
       Action::Reload => "reload",
       Action::ToggleHelp => "toggle_help",
       Action::CommandLine => "command_line",
@@ -166,6 +175,9 @@ impl Action {
       Action::YankNameWithoutExt => "Yank the selection's name without extension",
       Action::YankFile => "Yank the selection as a file (text/uri-list)",
       Action::Shell => "Run a shell command",
+      Action::Search => "Search entries (fuzzy, or * and ? wildcards)",
+      Action::SearchNext => "Jump to the next search match",
+      Action::SearchPrev => "Jump to the previous search match",
       Action::Reload => "Reload directory",
       Action::ToggleHelp => "Toggle this help",
       Action::CommandLine => "Open the command line",

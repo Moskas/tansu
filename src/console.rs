@@ -185,6 +185,8 @@ pub enum ConsoleCommand {
   Zoxide(Vec<String>),
   /// Run `command` through the shell. `flags` are the letters after a leading `-`.
   Shell { flags: String, command: String },
+  /// Search the current directory for this pattern, taken verbatim (spaces included).
+  Search(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -223,6 +225,10 @@ pub const Z: &str = "z";
 /// line as `shell `.
 pub const SHELL: &str = "shell";
 
+/// Name of the command that searches the current directory. Without a pattern it opens the
+/// command line as `search `.
+pub const SEARCH: &str = "search";
+
 /// Flag of `open_with` that detaches the program instead of suspending tansu for it.
 pub const DETACH_FLAG: &str = "-d";
 
@@ -238,6 +244,15 @@ pub fn parse(line: &str) -> Option<Result<ConsoleCommand, ConsoleError>> {
       ConsoleCommand::Action(Action::Rename)
     } else {
       ConsoleCommand::Rename(new_name.to_string())
+    }));
+  }
+  if name == SEARCH {
+    // Names may contain spaces, so the rest of the line is the pattern.
+    let pattern = rest_after_command(line).trim_end();
+    return Some(Ok(if pattern.is_empty() {
+      ConsoleCommand::Action(Action::Search)
+    } else {
+      ConsoleCommand::Search(pattern.to_string())
     }));
   }
   if name == SHELL {
@@ -298,10 +313,10 @@ fn command_names() -> Vec<String> {
   let mut names: Vec<String> = Action::ALL
     .iter()
     .map(|a| a.name())
-    .filter(|n| !n.contains(' ') && *n != RENAME && *n != SHELL)
+    .filter(|n| !n.contains(' ') && ![RENAME, SEARCH, SHELL].contains(n))
     .map(str::to_string)
     .collect();
-  names.extend([CD, OPEN_WITH, RENAME, SHELL, SORT, Z].map(|n| format!("{n} ")));
+  names.extend([CD, OPEN_WITH, RENAME, SEARCH, SHELL, SORT, Z].map(|n| format!("{n} ")));
   names.sort();
   names.dedup();
   names

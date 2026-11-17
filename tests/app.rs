@@ -1859,3 +1859,93 @@ fn wheel_over_a_loading_file_preview_does_not_move_the_cursor() {
   mouse(&mut app, MouseEventKind::ScrollUp, PREVIEW_X, FIRST_ROW);
   assert_eq!(selected(&app), "short.txt");
 }
+
+#[test]
+fn slash_opens_the_command_line_with_search() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "/");
+  assert_eq!(app.console.as_ref().unwrap().input(), "search ");
+  press(&mut app, "f10<Enter>");
+  assert!(app.console.is_none());
+  assert_eq!(selected(&app), "file10.txt");
+}
+
+#[test]
+fn search_jumps_to_the_best_fuzzy_match_and_n_cycles() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  // "file" is a substring of file2.txt and file10.txt; "fil" is also fuzzy in nothing else.
+  app.run_command_line("search fil");
+  pump(&mut app);
+  assert_eq!(
+    selected(&app),
+    "file2.txt",
+    "equal scores keep listing order"
+  );
+  assert!(app.message.as_ref().unwrap().text.contains("1/2"));
+  press(&mut app, "n");
+  assert_eq!(selected(&app), "file10.txt");
+  press(&mut app, "n");
+  assert_eq!(selected(&app), "file2.txt", "wraps around");
+  press(&mut app, "N");
+  assert_eq!(selected(&app), "file10.txt");
+}
+
+#[test]
+fn search_with_wildcards() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  app.run_command_line("search *.bin");
+  pump(&mut app);
+  assert_eq!(selected(&app), "blob.bin");
+  app.run_command_line("search b*");
+  pump(&mut app);
+  assert_eq!(selected(&app), "beta");
+  press(&mut app, "n");
+  assert_eq!(selected(&app), "blob.bin");
+}
+
+#[test]
+fn search_without_matches_or_previous_search_reports_errors() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "n");
+  assert!(
+    app
+      .message
+      .as_ref()
+      .unwrap()
+      .text
+      .contains("no previous search")
+  );
+  app.run_command_line("search zzz");
+  assert!(
+    app
+      .message
+      .as_ref()
+      .unwrap()
+      .text
+      .contains("no match for `zzz`")
+  );
+  assert_eq!(selected(&app), "alpha");
+}
+
+#[test]
+fn search_skips_hidden_entries_and_persists_across_directories() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  app.run_command_line("search *.txt");
+  pump(&mut app);
+  assert_eq!(selected(&app), "file2.txt");
+  press(&mut app, "gg");
+  press(&mut app, "l"); // alpha: a.txt, b.txt, .secret
+  press(&mut app, "n");
+  assert_eq!(
+    selected(&app),
+    "b.txt",
+    "n moves past the match under the cursor"
+  );
+  app.run_command_line("search secret");
+  assert!(app.message.as_ref().unwrap().text.contains("no match"));
+}

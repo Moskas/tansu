@@ -13,6 +13,7 @@ pub mod nav;
 pub mod opener;
 pub mod preview;
 pub mod runtime;
+pub mod search;
 pub mod shell;
 pub mod terminal;
 pub mod ui;

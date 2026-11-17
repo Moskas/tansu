@@ -24,6 +24,7 @@ use crate::graphics::EncodedImage;
 use crate::keymap::{Key, KeyResult, Keymap};
 use crate::nav::{Cursor, ScrollPos, passive_offset};
 use crate::preview::{Preview, PreviewLimits};
+use crate::search::Pattern;
 use crate::shell::{MacroContext, ShellFlags, ShellMode};
 use crate::vcs::{DirVcs, FileStatus, Mark, RepoStatus, VcsRequest};
 
@@ -243,6 +244,8 @@ pub struct App {
   repos: HashMap<PathBuf, Arc<RepoStatus>>,
   /// Directories whose next VCS scan must bypass the cache (after reload).
   vcs_force: HashSet<PathBuf>,
+  /// The last search as typed, and parsed. Kept across directory changes, like vim's.
+  search: Option<(String, Pattern)>,
   /// Directory left by the last directory change, for `:cd -`.
   previous_dir: Option<PathBuf>,
   /// Entry to select once the given directory is listed again (after a rename).
@@ -298,6 +301,7 @@ impl App {
       vcs_dirs: HashMap::new(),
       repos: HashMap::new(),
       vcs_force: HashSet::new(),
+      search: None,
       previous_dir: None,
       select_after_load: None,
       last_click: None,
@@ -721,6 +725,7 @@ impl App {
       Some(Ok(ConsoleCommand::Cd(path))) => self.cd(&path, console::CD),
       Some(Ok(ConsoleCommand::Zoxide(words))) => self.zoxide(words),
       Some(Ok(ConsoleCommand::Shell { flags, command })) => self.shell(&flags, &command),
+      Some(Ok(ConsoleCommand::Search(pattern))) => self.start_search(pattern),
     }
   }
 
@@ -767,6 +772,54 @@ impl App {
   fn prompt_shell(&mut self) {
     self.keymap.reset();
     self.console = Some(LineEditor::with_input(format!("{} ", console::SHELL)));
+  }
+
+  /// `:search`: remembers the pattern and jumps to the best match.
+  fn start_search(&mut self, text: String) {
+    let Some(pattern) = Pattern::parse(&text) else {
+      return;
+    };
+    self.search = Some((text, pattern));
+    self.jump_to_match(None);
+  }
+
+  /// Indices of the visible entries matching the search, best first. Equal scores (every
+  /// wildcard match) keep listing order.
+  fn search_matches(&self) -> Vec<usize> {
+    let Some((_, pattern)) = &self.search else {
+      return Vec::new();
+    };
+    let mut scored: Vec<(i64, usize)> = (0..self.visible.len())
+      .filter_map(|i| Some((pattern.score(&self.visible_entry(i)?.name)?, i)))
+      .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    scored.into_iter().map(|(_, i)| i).collect()
+  }
+
+  /// Selects a match of the last search: the best one for `None`, otherwise the next
+  /// (`Some(true)`) or previous one in match order from the selected entry, wrapping around.
+  /// From an entry that does not match, `n` goes to the best match and `N` to the worst.
+  fn jump_to_match(&mut self, forward: Option<bool>) {
+    let Some((text, _)) = &self.search else {
+      self.set_error("no previous search");
+      return;
+    };
+    let text = text.clone();
+    let matches = self.search_matches();
+    if matches.is_empty() {
+      self.set_error(format!("no match for `{text}`"));
+      return;
+    }
+    let n = matches.len();
+    let at = matches.iter().position(|&i| i == self.cursor.index);
+    let k = match (forward, at) {
+      (None, _) | (Some(true), None) => 0,
+      (Some(true), Some(k)) => (k + 1) % n,
+      (Some(false), Some(k)) => (k + n - 1) % n,
+      (Some(false), None) => n - 1,
+    };
+    self.set_cursor(matches[k]);
+    self.set_info(format!("match {}/{n} for `{text}`", k + 1));
   }
 
   /// `:cd`: no argument goes home, `-` to the previous directory, anything else is a path.
@@ -1255,6 +1308,12 @@ impl App {
       | Action::YankNameWithoutExt
       | Action::YankFile => self.yank(action),
       Action::Shell => self.prompt_shell(),
+      Action::Search => {
+        self.keymap.reset();
+        self.console = Some(LineEditor::with_input(format!("{} ", console::SEARCH)));
+      }
+      Action::SearchNext => self.jump_to_match(Some(true)),
+      Action::SearchPrev => self.jump_to_match(Some(false)),
       Action::Reload => self.reload(),
       Action::ToggleMetadata => {
         self.show_metadata = !self.show_metadata;
