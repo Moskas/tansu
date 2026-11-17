@@ -3,7 +3,7 @@
 
 use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// How a shell command runs, derived from its flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +98,8 @@ pub struct MacroContext<'a> {
   pub dir: &'a Path,
   /// The selected entry's full path.
   pub selected: Option<&'a Path>,
+  /// Paths in the copy/cut buffer.
+  pub copied: &'a [PathBuf],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -112,7 +114,8 @@ pub enum MacroError {
 /// - `%d`: the current directory
 /// - `%s`: the names of the selected files (the selected file)
 /// - `%p`: the full paths of the selected files
-/// - `%t`, `%c`: tagged files and the copy buffer, which tansu does not have, so empty
+/// - `%c`: full paths in the copy/cut buffer
+/// - `%t`: tagged files, which tansu does not have, so empty
 /// - `%D`, `%F`, `%S`, `%P`: the same for the next tab, which is this one; `%F` and `%S` are
 ///   full paths
 /// - `%%`: a literal `%`
@@ -169,7 +172,8 @@ fn macro_value(name: &str, ctx: &MacroContext) -> Result<Option<Vec<u8>>, MacroE
     "p" => ctx
       .selected
       .map_or_else(Vec::new, |p| shell_quote(p.as_os_str().as_bytes())),
-    "t" | "c" => Vec::new(),
+    "c" => quote_all(ctx.copied),
+    "t" => Vec::new(),
     // The next tab's directory, file and selection. Tansu has a single tab, which ranger
     // then treats as its own next tab; the files are given as full paths.
     "D" => shell_quote(ctx.dir.as_os_str().as_bytes()),
@@ -185,6 +189,15 @@ fn macro_value(name: &str, ctx: &MacroContext) -> Result<Option<Vec<u8>>, MacroE
     _ => return Ok(None),
   };
   Ok(Some(value))
+}
+
+/// Each path quoted, separated by spaces.
+fn quote_all(paths: &[PathBuf]) -> Vec<u8> {
+  let quoted: Vec<Vec<u8>> = paths
+    .iter()
+    .map(|p| shell_quote(p.as_os_str().as_bytes()))
+    .collect();
+  quoted.join(&b' ')
 }
 
 /// Quotes `s` for a POSIX shell: `'...'`, with each `'` written as `'\''`.

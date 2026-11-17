@@ -1352,3 +1352,23 @@ fn command_line_shell_queues_command_in_current_directory() {
     }]
   );
 }
+
+#[test]
+fn shell_c_macro_expands_to_the_copy_buffer() {
+  use tansu::shell::ShellMode;
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjjyy"); // file2.txt
+  press(&mut app, ":shell -f cp %c beta");
+  press_keys_without_pump(&mut app, "<Enter>");
+  let quoted = format!("'{}'", work.join("file2.txt").display());
+  assert_eq!(
+    app.take_commands(),
+    vec![Command::Shell {
+      script: format!("cp {quoted} beta").into(),
+      cwd: work.clone(),
+      mode: ShellMode::Detached,
+      program: "cp".into(),
+    }]
+  );
+}

@@ -1045,12 +1045,13 @@ fn shell_flags_choose_how_the_command_runs() {
 
 #[test]
 fn shell_macros_expand_to_quoted_paths() {
-  use std::path::Path;
+  use std::path::{Path, PathBuf};
   use tansu::shell::{MacroContext, MacroError, expand_macros};
   let file = Path::new("/home/u/it's a file.txt");
   let ctx = MacroContext {
     dir: Path::new("/home/u"),
     selected: Some(file),
+    copied: &[],
   };
   let expand = |s: &str| expand_macros(s, &ctx).map(|o| o.into_string().unwrap());
   assert_eq!(expand("vim %f").unwrap(), r"vim 'it'\''s a file.txt'");
@@ -1079,6 +1080,7 @@ fn shell_macros_expand_to_quoted_paths() {
   let empty = MacroContext {
     dir: Path::new("/tmp/empty"),
     selected: None,
+    copied: &[],
   };
   assert_eq!(expand_macros("touch new %s", &empty).unwrap(), "touch new ");
   assert_eq!(
@@ -1086,6 +1088,18 @@ fn shell_macros_expand_to_quoted_paths() {
     Err(MacroError::NothingSelected("f".into()))
   );
   assert_eq!(expand_macros("ls %S %P", &empty).unwrap(), "ls  ");
+
+  // `%c` is every path in the copy/cut buffer.
+  let copied = [PathBuf::from("/a/x y"), PathBuf::from("/b/z")];
+  let buffer = MacroContext {
+    dir: Path::new("/tmp"),
+    selected: None,
+    copied: &copied,
+  };
+  assert_eq!(
+    expand_macros("cp %c .", &buffer).unwrap(),
+    "cp '/a/x y' '/b/z' ."
+  );
 }
 
 #[test]
@@ -1134,6 +1148,7 @@ fn shell_commands_run_in_the_given_directory() {
   let ctx = MacroContext {
     dir: tmp.path(),
     selected: Some(&file),
+    copied: &[],
   };
   // `%f` is a bare name, so this only passes when the shell runs in `dir`.
   let script = expand_macros("test -f %f && test -d %d && test -f %p", &ctx).unwrap();

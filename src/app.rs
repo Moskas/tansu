@@ -479,9 +479,14 @@ impl App {
   fn shell(&mut self, flags: &str, command: &str) {
     let flags = ShellFlags::parse(flags);
     let selected = self.selected().map(|e| e.path.clone());
+    let copied = self
+      .buffer
+      .as_ref()
+      .map_or_else(Vec::new, |b| b.paths.clone());
     let ctx = MacroContext {
       dir: &self.cwd,
       selected: selected.as_deref(),
+      copied: copied.as_slice(),
     };
     let script = match crate::shell::expand_macros(command, &ctx) {
       Ok(script) => flags.apply_sudo(script),

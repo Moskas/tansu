@@ -200,12 +200,13 @@ shell. These macros are expanded first, each value shell-quoted:
 | `%s`       | Names of the selected entries (currently the selected one)          |
 | `%p`       | Full paths of the selected entries                                  |
 | `%d`       | The current directory                                               |
+| `%c`       | Full paths in the copy/cut buffer (`yy`, `dd`)                      |
 | `%D`, `%F` | Next tab's directory and file path; tansu has one tab, so this one  |
 | `%%`       | A literal `%`                                                       |
 
 Other `%` sequences are kept as written (`date +%Y`), so write `%%d` for a literal `%d`. `%S`
-and `%P` work like `%p`. `%t` and `%c` (tagged files and the copy buffer in ranger) expand to
-nothing, and `%f` or `%F` without a selection is an error.
+and `%P` work like `%p`. `%t` (tagged files in ranger) expands to nothing, and `%f` or `%F`
+without a selection is an error.
 
 A first word starting with `-` holds flags; an uppercase flag cancels its lowercase one:
 
