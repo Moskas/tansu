@@ -58,13 +58,14 @@ feature it provides is missing, and previews fall back to plain text or a metada
 | `ffprobe`                  | Video details (duration, size, codecs)      | `ffmpeg`            |
 | `ffmpegthumbnailer`        | Video frames                                | `ffmpegthumbnailer` |
 | `ffmpeg`                   | Video frames without ffmpegthumbnailer      | `ffmpeg`            |
+| `pdftoppm`, `pdfinfo`      | PDF first pages and details                 | `poppler-utils`     |
 | `zoxide`                   | `:z` and recording visited directories      | `zoxide`            |
 | `wl-copy`, `xclip`, `xsel` | The `y` clipboard keys (OSC 52 without)     | same names [^clip]  |
 | `xdg-open`                 | The default opener                          | `xdg-utils`         |
 
 [^clip]: `wl-copy` comes in the `wl-clipboard` package; `xclip` and `xsel` in their own.
 
-The wrapped Nix package includes `bat`, `ffmpeg` and `ffmpegthumbnailer`.
+The wrapped Nix package includes `bat`, `ffmpeg`, `ffmpegthumbnailer` and `poppler-utils`.
 
 ## Previews
 
@@ -87,11 +88,15 @@ text, an image, or a metadata block for everything else.
   by `ffmpegthumbnailer` or `ffmpeg`, with the duration, resolution, video and audio codecs
   and bitrate from `ffprobe` below it, laid out like photo details. Without the frame
   programs (or without graphics), the details are shown in a metadata block.
-- Rendered previews (video frames) are scaled to at most 2048 pixels a side and cached in
-  `$XDG_CACHE_HOME/tansu/thumbnails` (usually `~/.cache/tansu/thumbnails`, readable only by
-  the user), keyed by path, size and modification time, so a file is only rendered again
-  after it changes. The cache keeps the 1000 most recent thumbnails, up to 256 MiB.
-  External programs get 10 seconds before they are stopped.
+- PDFs show their first page, rendered by `pdftoppm`, with the title, author, page count,
+  page size and creation date from `pdfinfo` below it. Without poppler (or without
+  graphics) the details are shown in a metadata block; a file poppler cannot read falls back
+  to the text or metadata preview.
+- Rendered previews (video frames, PDF pages) are scaled to at most 2048 pixels a side and
+  cached in `$XDG_CACHE_HOME/tansu/thumbnails` (usually `~/.cache/tansu/thumbnails`,
+  readable only by the user), keyed by path, size and modification time, so a file is only
+  rendered again after it changes. The cache keeps the 1000 most recent thumbnails, up to
+  256 MiB. External programs get 10 seconds before they are stopped.
 - `i` switches file previews to a metadata block (size, mode, owner, modification time,
   and dimensions for images) and back. The mode stays on while moving; directories keep
   showing their contents.

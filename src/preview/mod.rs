@@ -7,6 +7,7 @@ pub mod exif;
 pub mod highlight;
 mod image;
 mod metadata;
+pub mod pdf;
 mod text;
 pub mod thumbnail;
 pub mod video;
@@ -23,6 +24,7 @@ pub use directory::DirectoryPreviewer;
 pub use highlight::{HighlightConfig, Highlighter};
 pub use image::{ImagePreviewer, PreviewImage};
 pub use metadata::{MetadataPreviewer, metadata_lines};
+pub use pdf::PdfPreviewer;
 pub use text::{TextPreviewer, looks_binary};
 pub use thumbnail::ThumbnailCache;
 pub use video::VideoPreviewer;
@@ -126,9 +128,9 @@ impl PreviewRegistry {
     r
   }
 
-  /// The defaults plus syntax highlighting (when enabled), video previews (with a frame when
-  /// `images` is set) and, when `images` is set, an
-  /// image previewer ahead of text.
+  /// The defaults plus syntax highlighting (when enabled), video and PDF previews (with a
+  /// frame or page when `images` is set) and, when `images` is set, an image previewer
+  /// ahead of text.
   pub fn configured(highlight: &HighlightConfig, images: bool) -> Self {
     let mut r = Self::new();
     r.register(100, Box::new(DirectoryPreviewer));
@@ -136,6 +138,7 @@ impl PreviewRegistry {
       r.register(75, Box::new(ImagePreviewer));
     }
     r.register(70, Box::new(VideoPreviewer { frames: images }));
+    r.register(70, Box::new(PdfPreviewer { pages: images }));
     let text = if highlight.enabled {
       TextPreviewer::with_highlighter(Highlighter::new(highlight.clone()))
     } else {

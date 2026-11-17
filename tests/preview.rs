@@ -592,3 +592,115 @@ fn renderings_are_scaled_down_and_cached_privately() {
   .unwrap();
   assert!(matches!(again, Some(Preview::Image(_))));
 }
+
+/// A two-page A4 PDF with a title and author, its cross-reference table computed so poppler
+/// reads it without repairing it.
+fn pdf_document(path: &Path) {
+  let content = "0 0 1 rg 50 50 200 300 re f";
+  let objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+    "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".to_string(),
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.276 841.89] /Contents 5 0 R >>".to_string(),
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.276 841.89] >>".to_string(),
+    format!(
+      "<< /Length {} >>\nstream\n{content}\nendstream",
+      content.len()
+    ),
+    "<< /Title (Test Book) /Author (Jane Doe) /CreationDate (D:20240501123456Z) >>".to_string(),
+  ];
+  let mut pdf = String::from("%PDF-1.4\n");
+  let mut offsets = Vec::new();
+  for (i, body) in objects.iter().enumerate() {
+    offsets.push(pdf.len());
+    pdf.push_str(&format!("{} 0 obj\n{body}\nendobj\n", i + 1));
+  }
+  let xref = pdf.len();
+  pdf.push_str(&format!(
+    "xref\n0 {}\n0000000000 65535 f \n",
+    objects.len() + 1
+  ));
+  for offset in offsets {
+    pdf.push_str(&format!("{offset:010} 00000 n \n"));
+  }
+  pdf.push_str(&format!(
+    "trailer\n<< /Size {} /Root 1 0 R /Info 6 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+    objects.len() + 1
+  ));
+  fs::write(path, pdf).unwrap();
+}
+
+#[test]
+fn pdfinfo_reports_become_document_details() {
+  let rows = tansu::preview::pdf::rows(
+    "Title:           Annual Report\n\
+     Author:          \n\
+     Producer:        LibreOffice\n\
+     CreationDate:    Wed May  1 14:34:56 2024 CEST\n\
+     Pages:           12\n\
+     Encrypted:       yes (print:yes copy:no)\n\
+     Page size:       612 x 792 pts (letter)\n",
+  );
+  let rows: Vec<(&str, &str)> = rows.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+  assert_eq!(
+    rows,
+    vec![
+      ("Title", "Annual Report"),
+      ("Pages", "12"),
+      ("Page size", "letter (216 x 279 mm)"),
+      ("Created", "Wed May  1 14:34:56 2024 CEST"),
+      ("Encrypted", "yes"),
+    ]
+  );
+}
+
+#[test]
+fn pdfs_show_their_first_page_with_details() {
+  if !installed("pdftoppm") || !installed("pdfinfo") {
+    eprintln!("skipped: poppler not installed");
+    return;
+  }
+  let tmp = tempfile::tempdir().unwrap();
+  let file = tmp.path().join("book.pdf");
+  pdf_document(&file);
+  let registry = PreviewRegistry::configured(&HighlightConfig::default(), true);
+  let preview = preview(&registry, &file, PreviewLimits::default());
+  let Preview::Image(img) = &preview else {
+    panic!("expected the first page, got {preview:?}");
+  };
+  // A4 rendered to fit 2048 px.
+  assert_eq!(img.height, tansu::preview::thumbnail::MAX_SIDE);
+  assert!((1440..1460).contains(&img.width), "width {}", img.width);
+  let info = info_of(&preview);
+  assert_eq!(row(&info, "Title"), Some("Test Book"));
+  assert_eq!(row(&info, "Author"), Some("Jane Doe"));
+  assert_eq!(row(&info, "Pages"), Some("2"));
+  assert_eq!(row(&info, "Page size"), Some("A4 (210 x 297 mm)"));
+  assert!(row(&info, "Created").is_some_and(|c| c.contains("2024")));
+
+  // Without graphics: the details in a metadata block.
+  let registry = PreviewRegistry::configured(&HighlightConfig::default(), false);
+  let Preview::Metadata(rows) = preview_of(&registry, &file) else {
+    panic!("expected metadata");
+  };
+  assert_eq!(row(&rows, "Type"), Some("PDF document"));
+  assert_eq!(row(&rows, "Pages"), Some("2"));
+}
+
+fn preview_of(registry: &PreviewRegistry, path: &Path) -> Preview {
+  preview(registry, path, PreviewLimits::default())
+}
+
+#[test]
+fn damaged_pdfs_fall_back_to_other_previewers() {
+  if !installed("pdftoppm") || !installed("pdfinfo") {
+    eprintln!("skipped: poppler not installed");
+    return;
+  }
+  let tmp = tempfile::tempdir().unwrap();
+  let file = tmp.path().join("broken.pdf");
+  fs::write(&file, "%PDF-1.4\nnot really\n").unwrap();
+  let registry = PreviewRegistry::configured(&HighlightConfig::default(), true);
+  // Neither poppler tool can read it, so another previewer (text, here) takes over.
+  let preview = preview_of(&registry, &file);
+  assert!(!matches!(preview, Preview::Image(_)), "got {preview:?}");
+}

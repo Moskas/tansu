@@ -30,6 +30,7 @@
           bat # syntax highlighting
           ffmpeg-headless # ffprobe (video details) and ffmpeg (frames)
           ffmpegthumbnailer # video frames
+          poppler-utils # pdftoppm (PDF pages) and pdfinfo (PDF details)
         ];
 
         tansu-unwrapped = naersk'.buildPackage {
