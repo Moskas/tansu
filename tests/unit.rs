@@ -716,6 +716,22 @@ fn parses_console_commands() {
 }
 
 #[test]
+fn parses_rename_command() {
+  assert_eq!(
+    parse("rename  my file.txt "),
+    Some(Ok(ConsoleCommand::Rename("my file.txt".into())))
+  );
+  assert_eq!(
+    parse("rename"),
+    Some(Ok(ConsoleCommand::Action(Action::Rename)))
+  );
+  assert_eq!(
+    parse("  rename   "),
+    Some(Ok(ConsoleCommand::Action(Action::Rename)))
+  );
+}
+
+#[test]
 fn parses_sort_command() {
   use tansu::fs::SortKey;
   assert_eq!(
@@ -767,4 +783,92 @@ fn foreground_program_gets_the_path_as_its_last_argument() {
   let missing = tmp.path().join("missing");
   assert!(!run_foreground(&argv, &missing).unwrap().success());
   assert!(run_foreground(&["tansu-no-such-program".to_string()], &path).is_err());
+}
+
+// ---- command line completion ----
+
+fn complete_with(line: &str, selected: Option<&str>) -> Vec<String> {
+  use tansu::console::{CompletionSource, completions};
+  let programs = vec!["mpv".to_string(), "nvim".to_string(), "nvim-qt".to_string()];
+  let list = || programs.as_slice();
+  completions(
+    line,
+    &CompletionSource {
+      selected,
+      programs: &list,
+    },
+  )
+}
+
+#[test]
+fn completes_command_names() {
+  assert_eq!(
+    complete_with("tog", None),
+    vec!["toggle_help", "toggle_hidden", "toggle_metadata"]
+  );
+  // Commands that take an argument get a trailing space.
+  assert_eq!(complete_with("ren", None), vec!["rename "]);
+  assert_eq!(complete_with("  so", None), vec!["sort "]);
+  assert_eq!(complete_with("open", None), vec!["open", "open_with "]);
+  assert!(complete_with("zzz", None).is_empty());
+  let all = complete_with("", None);
+  assert!(all.contains(&"quit".to_string()) && all.contains(&"rename ".to_string()));
+  assert!(
+    !all
+      .iter()
+      .any(|n| n.starts_with("sort ") && n.len() > "sort ".len())
+  );
+}
+
+#[test]
+fn completes_command_arguments() {
+  assert_eq!(
+    complete_with("rename ", Some("a b.txt")),
+    vec!["rename a b.txt"]
+  );
+  assert_eq!(
+    complete_with("rename a ", Some("a b.txt")),
+    vec!["rename a b.txt"]
+  );
+  assert!(complete_with("rename x", Some("a b.txt")).is_empty());
+  assert!(complete_with("rename ", None).is_empty());
+  assert_eq!(
+    complete_with("sort ", None),
+    vec!["sort name", "sort size", "sort mtime", "sort ctime"]
+  );
+  assert_eq!(complete_with("sort m", None), vec!["sort mtime"]);
+  assert_eq!(
+    complete_with("open_with nv", None),
+    vec!["open_with nvim", "open_with nvim-qt"]
+  );
+  assert_eq!(
+    complete_with("open_with -d m", None),
+    vec!["open_with -d mpv"]
+  );
+  assert!(complete_with("open_with nvim -", None).is_empty());
+  assert!(complete_with("reload ", None).is_empty());
+}
+
+#[test]
+fn programs_are_executables_on_path() {
+  use std::os::unix::fs::PermissionsExt;
+  let a = tempfile::tempdir().unwrap();
+  let b = tempfile::tempdir().unwrap();
+  let exec = |dir: &std::path::Path, name: &str, mode: u32| {
+    let path = dir.join(name);
+    std::fs::write(&path, "").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+  };
+  exec(a.path(), "zeta", 0o755);
+  exec(a.path(), "plain", 0o644);
+  exec(b.path(), "alpha", 0o755);
+  exec(b.path(), "zeta", 0o755);
+  std::fs::create_dir(b.path().join("subdir")).unwrap();
+  std::os::unix::fs::symlink(a.path().join("zeta"), b.path().join("linked")).unwrap();
+  let path =
+    std::env::join_paths([a.path(), b.path(), std::path::Path::new("/nonexistent")]).unwrap();
+  assert_eq!(
+    tansu::opener::programs_in(&path),
+    vec!["alpha", "linked", "zeta"]
+  );
 }

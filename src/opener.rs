@@ -1,6 +1,8 @@
 //! Launching files with an external program, either detached from the TUI or in the
 //! foreground with the terminal handed over to it.
 
+use std::ffi::OsStr;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
@@ -15,6 +17,28 @@ pub enum OpenError {
     program: String,
     source: std::io::Error,
   },
+}
+
+/// Names of the executables in the `PATH` directories, sorted and deduplicated.
+pub fn path_programs() -> Vec<String> {
+  std::env::var_os("PATH").map_or_else(Vec::new, |p| programs_in(&p))
+}
+
+/// Names of the executables in the directories of a `PATH`-style list.
+pub fn programs_in(path: &OsStr) -> Vec<String> {
+  let mut names: Vec<String> = std::env::split_paths(path)
+    .filter_map(|dir| std::fs::read_dir(dir).ok())
+    .flatten()
+    .flatten()
+    // `metadata` follows symlinks, which is how Nix profiles expose their programs.
+    .filter(|e| {
+      std::fs::metadata(e.path()).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    })
+    .filter_map(|e| e.file_name().into_string().ok())
+    .collect();
+  names.sort();
+  names.dedup();
+  names
 }
 
 /// Runs `opener <path>` detached. `opener` is split on whitespace.

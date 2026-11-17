@@ -464,7 +464,7 @@ fn git_status_markers_in_repo_and_parent() {
 
   let mut app = new_app(&repo);
   app.config.vcs_aware = true;
-  press(&mut app, "r");
+  press(&mut app, "R");
 
   assert_eq!(
     marks(&app, &repo, "src"),
@@ -531,7 +531,7 @@ fn no_markers_outside_repositories() {
   let (_tmp, work) = fixture();
   let mut app = new_app(&work);
   app.config.vcs_aware = true;
-  press(&mut app, "r");
+  press(&mut app, "R");
   let entry = app.selected().unwrap().clone();
   assert!(app.vcs_marks(&work, &entry).is_empty());
 }
@@ -819,7 +819,7 @@ fn sort_order_applies_to_listings_loaded_later() {
   press(&mut app, "l");
   assert_eq!(names(&app), vec!["a.txt", "b.txt"]);
   fs::write(work.join("alpha/b.txt"), "an even longer file than a\n").unwrap();
-  press(&mut app, "r");
+  press(&mut app, "R");
   assert_eq!(names(&app), vec!["b.txt", "a.txt"]);
 }
 
@@ -843,4 +843,132 @@ fn config_sets_the_initial_sort_order() {
   app.set_size(WIDTH, HEIGHT);
   pump(&mut app);
   assert_eq!(names(&app)[2], "好きな歌のタイトル.mp3");
+}
+
+#[test]
+fn r_prefills_rename_and_enter_renames_the_selection() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj");
+  assert_eq!(selected(&app), "file2.txt");
+  press(&mut app, "r");
+  assert_eq!(app.console.as_ref().unwrap().input(), "rename file2.txt");
+  // Erase the name and type a new one with a space in it.
+  press(
+    &mut app,
+    "<BS><BS><BS><BS><BS><BS><BS><BS><BS>zz top.md<Enter>",
+  );
+  assert!(app.console.is_none());
+  assert!(work.join("zz top.md").exists());
+  assert!(!work.join("file2.txt").exists());
+  assert_eq!(selected(&app), "zz top.md");
+  assert_eq!(app.message.as_ref().unwrap().text, "renamed to zz top.md");
+}
+
+#[test]
+fn tab_completes_the_selected_name_in_rename() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjjj");
+  press(&mut app, ":rename<Tab>");
+  assert_eq!(app.console.as_ref().unwrap().input(), "rename ");
+  press(&mut app, "<Tab>");
+  assert_eq!(app.console.as_ref().unwrap().input(), "rename file10.txt");
+  press(&mut app, "<C-u>rename fi<Tab>");
+  assert_eq!(app.console.as_ref().unwrap().input(), "rename file10.txt");
+  // An argument that is not a prefix of the name is left alone.
+  press(&mut app, "<C-u>rename other<Tab>");
+  assert_eq!(app.console.as_ref().unwrap().input(), "rename other");
+  press(&mut app, "<C-u>reload<Tab>");
+  assert_eq!(app.console.as_ref().unwrap().input(), "reload");
+}
+
+#[test]
+fn rename_without_a_name_opens_the_prefilled_line() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, ":rename<Enter>");
+  assert_eq!(app.console.as_ref().unwrap().input(), "rename alpha");
+}
+
+#[test]
+fn rename_refuses_existing_targets_and_invalid_names() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj");
+  press(&mut app, ":rename file10.txt<Enter>");
+  assert_eq!(
+    app.message.as_ref().unwrap().text,
+    "rename: `file10.txt` already exists"
+  );
+  assert_eq!(fs::read_to_string(work.join("file2.txt")).unwrap(), "two\n");
+  press(&mut app, ":rename a/b<Enter>");
+  assert_eq!(
+    app.message.as_ref().unwrap().text,
+    "rename: invalid name `a/b`"
+  );
+  press(&mut app, ":rename ..<Enter>");
+  assert_eq!(
+    app.message.as_ref().unwrap().text,
+    "rename: invalid name `..`"
+  );
+  assert_eq!(selected(&app), "file2.txt");
+}
+
+#[test]
+fn renaming_a_directory_drops_its_stale_listing() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "l");
+  press(&mut app, "h");
+  press(&mut app, ":rename gamma<Enter>");
+  assert_eq!(selected(&app), "gamma");
+  assert!(app.listing(&work.join("alpha")).is_none());
+  press(&mut app, "l");
+  assert_eq!(names(&app), vec!["a.txt", "b.txt"]);
+}
+
+fn console_input(app: &App) -> String {
+  app.console.as_ref().unwrap().input().to_string()
+}
+
+#[test]
+fn tab_cycles_through_matching_commands() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, ":tog<Tab>");
+  assert_eq!(console_input(&app), "toggle_help");
+  press(&mut app, "<Tab>");
+  assert_eq!(console_input(&app), "toggle_hidden");
+  press(&mut app, "<Tab><Tab>");
+  assert_eq!(console_input(&app), "toggle_help");
+  press(&mut app, "<S-Tab>");
+  assert_eq!(console_input(&app), "toggle_metadata");
+  // Editing starts a new completion from the edited line.
+  press(&mut app, "<C-u>so<Tab>");
+  assert_eq!(console_input(&app), "sort ");
+  press(&mut app, "<Tab>");
+  assert_eq!(console_input(&app), "sort name");
+  press(&mut app, "<Tab>");
+  assert_eq!(console_input(&app), "sort size");
+  press(&mut app, "<Enter>");
+  assert_eq!(app.sort, tansu::fs::SortKey::Size);
+}
+
+#[test]
+fn shift_tab_starts_from_the_last_candidate() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, ":sort <S-Tab>");
+  assert_eq!(console_input(&app), "sort ctime");
+}
+
+#[test]
+fn tab_completes_command_then_selected_name() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "j:ren<Tab>");
+  assert_eq!(console_input(&app), "rename ");
+  press(&mut app, "<Tab>");
+  assert_eq!(console_input(&app), "rename beta");
 }

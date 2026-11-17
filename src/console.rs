@@ -29,6 +29,19 @@ impl LineEditor {
     LineEditor::default()
   }
 
+  /// An editor holding `input`, with the cursor at the end.
+  pub fn with_input(input: impl Into<String>) -> Self {
+    let mut editor = LineEditor::new();
+    editor.set_input(input);
+    editor
+  }
+
+  /// Replaces the input and moves the cursor to the end.
+  pub fn set_input(&mut self, input: impl Into<String>) {
+    self.input = input.into();
+    self.cursor = self.len();
+  }
+
   pub fn input(&self) -> &str {
     &self.input
   }
@@ -164,6 +177,8 @@ pub enum ConsoleCommand {
   Action(Action),
   /// Run `argv` with the selected path appended as the last argument.
   OpenWith { argv: Vec<String>, detach: bool },
+  /// Rename the selection to this name, taken verbatim (spaces included).
+  Rename(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -186,6 +201,10 @@ pub const OPEN_WITH: &str = "open_with";
 /// Name of the command that changes the sort order, followed by a sort type.
 pub const SORT: &str = "sort";
 
+/// Name of the command that renames the selection. Without a name it opens the command
+/// line prefilled with the current one.
+pub const RENAME: &str = "rename";
+
 /// Flag of `open_with` that detaches the program instead of suspending tansu for it.
 pub const DETACH_FLAG: &str = "-d";
 
@@ -194,7 +213,92 @@ pub const DETACH_FLAG: &str = "-d";
 pub fn parse(line: &str) -> Option<Result<ConsoleCommand, ConsoleError>> {
   let mut words = line.split_whitespace();
   let name = words.next()?;
+  if name == RENAME {
+    // File names may contain spaces, so the rest of the line is the name.
+    let new_name = rest_after_command(line).trim();
+    return Some(Ok(if new_name.is_empty() {
+      ConsoleCommand::Action(Action::Rename)
+    } else {
+      ConsoleCommand::Rename(new_name.to_string())
+    }));
+  }
   Some(parse_words(name, words))
+}
+
+/// The line after its first word, with the separating whitespace removed.
+fn rest_after_command(line: &str) -> &str {
+  let line = line.trim_start();
+  let end = line.find(char::is_whitespace).unwrap_or(line.len());
+  line[end..].trim_start()
+}
+
+/// What Tab completion draws on besides the line itself.
+pub struct CompletionSource<'a> {
+  /// Name of the selected entry, for `rename`.
+  pub selected: Option<&'a str>,
+  /// Programs on `PATH`, for `open_with`. Only called when a program name is completed.
+  pub programs: &'a dyn Fn() -> &'a [String],
+}
+
+/// Names offered for the first word. Commands that take an argument end in a space so the
+/// next Tab goes on to complete the argument.
+fn command_names() -> Vec<String> {
+  let mut names: Vec<String> = Action::ALL
+    .iter()
+    .map(|a| a.name())
+    .filter(|n| !n.contains(' ') && *n != RENAME)
+    .map(str::to_string)
+    .collect();
+  names.extend([OPEN_WITH, RENAME, SORT].map(|n| format!("{n} ")));
+  names.sort();
+  names.dedup();
+  names
+}
+
+/// Completed lines for Tab, in the order they are cycled through; empty when nothing
+/// matches. The first word completes to a command name; after it, `rename` offers the
+/// selected name, `sort` the sort types and `open_with [-d]` the programs on `PATH`.
+pub fn completions(line: &str, src: &CompletionSource) -> Vec<String> {
+  let line = line.trim_start();
+  let Some(split) = line.find(char::is_whitespace) else {
+    return command_names()
+      .into_iter()
+      .filter(|n| n.starts_with(line))
+      .collect();
+  };
+  let (command, arg) = (&line[..split], line[split..].trim_start());
+  match command {
+    RENAME => src
+      .selected
+      .filter(|name| name.starts_with(arg))
+      .map(|name| format!("{RENAME} {name}"))
+      .into_iter()
+      .collect(),
+    SORT => SortKey::ALL
+      .iter()
+      .map(|k| k.name())
+      .filter(|k| k.starts_with(arg))
+      .map(|k| format!("{SORT} {k}"))
+      .collect(),
+    OPEN_WITH => {
+      let (head, program) = match arg.strip_prefix(DETACH_FLAG) {
+        Some(after) if after.starts_with(char::is_whitespace) => {
+          (format!("{OPEN_WITH} {DETACH_FLAG} "), after.trim_start())
+        }
+        _ => (format!("{OPEN_WITH} "), arg),
+      };
+      // Once the program is typed, its own arguments are not completed.
+      if program.contains(char::is_whitespace) {
+        return Vec::new();
+      }
+      (src.programs)()
+        .iter()
+        .filter(|p| p.starts_with(program))
+        .map(|p| format!("{head}{p}"))
+        .collect()
+    }
+    _ => Vec::new(),
+  }
 }
 
 fn parse_words<'a>(

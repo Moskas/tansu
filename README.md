@@ -71,7 +71,7 @@ significant status of their contents (ignored files do not count).
 
 A directory that is itself a repository root gets a second mark in front, describing its
 branch relative to the upstream: `=` in sync, `>` ahead, `<` behind, `Y` diverged, `⌂` no
-upstream. Status comes from `git status` in the background and is refreshed on `r`.
+upstream. Status comes from `git status` in the background and is refreshed on `R`.
 
 ## Development
 
@@ -100,7 +100,8 @@ cargo test
 | `os`                        | Sort by size, largest first   |
 | `om`                        | Sort by modification time     |
 | `oc`                        | Sort by change time           |
-| `r`                         | Reload directory              |
+| `r`                         | Rename the selection          |
+| `R`                         | Reload directory              |
 | `?`                         | Toggle help overlay           |
 | `:`                         | Open the command line         |
 | `q`, `<C-c>`                | Quit                          |
@@ -124,6 +125,8 @@ or `<C-c>` cancels, and `<BS>` on an empty line closes it. Editing keys: `<Left>
 |------------------------------------|------------------------------------------------------|
 | `open_with <program> [args...]`    | Run the program on the selection in the foreground   |
 | `open_with -d <program> [args...]` | Run the program on the selection, detached           |
+| `rename <new name>`                | Rename the selection within its directory            |
+| `rename`                           | Open the command line as `rename <selected name>`    |
 | `sort <type>`                      | Sort by `name`, `size`, `mtime` or `ctime`           |
 | `<action>`                         | Any action name below, e.g. `open`, `reload`, `quit` |
 | `q`                                | Quit                                                 |
@@ -134,6 +137,16 @@ gets the terminal while tansu waits, and the current directory is reloaded when 
 non-zero exit status is reported in the status line. Use `-d` for GUI programs
 (`:open_with -d mpv`) so tansu stays usable. `open_with` on a directory passes the directory
 instead of entering it.
+
+`rename` takes the rest of the line as the new name, so names may contain spaces. It refuses
+to replace an existing entry, and the renamed entry stays selected. `r` opens the command line
+as `rename <selected name>`.
+
+`<Tab>` completes the word being typed: command names first, then their arguments. `rename`
+completes to the selected name, `sort` to the sort types, and `open_with [-d]` to the programs
+on `PATH` (scanned the first time they are completed). When several candidates match, pressing
+`<Tab>` again cycles through them and `<S-Tab>` cycles backward. Commands that take an argument
+complete with a trailing space, so the next `<Tab>` goes on to the argument.
 
 ## Configuration
 
@@ -238,7 +251,7 @@ vcs_commit = "#fabd2f"
 
 Action names: `move_up`, `move_down`, `move_top`, `move_bottom`, `half_page_up`,
 `half_page_down`, `page_up`, `page_down`, `go_parent`, `open`, `go_home`, `toggle_hidden`,
-`toggle_metadata`, `sort name`, `sort size`, `sort mtime`, `sort ctime`, `reload`, `toggle_help`,
+`toggle_metadata`, `rename`, `sort name`, `sort size`, `sort mtime`, `sort ctime`, `reload`, `toggle_help`,
 `command_line`, `quit`.
 
 ## Architecture

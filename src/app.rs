@@ -2,15 +2,18 @@
 //! [`Action`]s through the keymap, and updates state. Side effects (I/O) are not performed
 //! here; they are queued as [`Command`]s for the runtime, whose results come back as events.
 
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crossterm::event::KeyCode;
+
 use crate::action::Action;
 use crate::config::Config;
-use crate::console::{self, ConsoleCommand, EditOutcome, LineEditor};
+use crate::console::{self, CompletionSource, ConsoleCommand, EditOutcome, LineEditor};
 use crate::event::Event;
 use crate::fs::sort::sort_entries_by;
 use crate::fs::{DirCount, DirListing, Entry, SortKey};
@@ -45,6 +48,10 @@ pub enum Command {
     argv: Vec<String>,
     path: PathBuf,
     foreground: bool,
+  },
+  Rename {
+    from: PathBuf,
+    to: PathBuf,
   },
 }
 
@@ -121,6 +128,10 @@ pub struct App {
   pub show_help: bool,
   /// The `:` command line, while it is open.
   pub console: Option<LineEditor>,
+  /// Tab completion candidates for the command line and the one currently shown.
+  completion: Option<(Vec<String>, usize)>,
+  /// Programs on `PATH`, scanned the first time `open_with` is completed.
+  programs: OnceCell<Vec<String>>,
   /// Show file metadata instead of the content preview (directories keep their listing).
   pub show_metadata: bool,
   pub should_quit: bool,
@@ -145,6 +156,8 @@ pub struct App {
   repos: HashMap<PathBuf, Arc<RepoStatus>>,
   /// Directories whose next VCS scan must bypass the cache (after reload).
   vcs_force: HashSet<PathBuf>,
+  /// Entry to select once the given directory is listed again (after a rename).
+  select_after_load: Option<(PathBuf, String)>,
   commands: Vec<Command>,
 }
 
@@ -169,6 +182,8 @@ impl App {
       cwd: start.clone(),
       show_help: false,
       console: None,
+      completion: None,
+      programs: OnceCell::new(),
       show_metadata: false,
       should_quit: false,
       message: None,
@@ -188,6 +203,7 @@ impl App {
       vcs_dirs: HashMap::new(),
       repos: HashMap::new(),
       vcs_force: HashSet::new(),
+      select_after_load: None,
       commands: Vec::new(),
     };
     app.enter_dir(start, select);
@@ -333,6 +349,7 @@ impl App {
         image,
       } => self.on_preview(id, path, result, image),
       Event::Counts(counts) => self.counts.extend(counts),
+      Event::Renamed { from, to, result } => self.on_renamed(from, to, result),
       Event::Vcs { dir, info, repos } => {
         self.vcs_dirs.insert(dir, info);
         for repo in repos {
@@ -348,6 +365,17 @@ impl App {
       self.show_help = false;
       self.keymap.reset();
       return;
+    }
+    if self.console.is_some() {
+      let forward = match key.code {
+        KeyCode::Tab if key.mods.is_empty() => Some(true),
+        KeyCode::BackTab => Some(false),
+        _ => None,
+      };
+      if let Some(forward) = forward {
+        self.complete_command_line(forward);
+        return;
+      }
     }
     if let Some(editor) = &mut self.console {
       match editor.handle_key(key) {
@@ -372,7 +400,109 @@ impl App {
       Some(Err(e)) => self.set_error(e.to_string()),
       Some(Ok(ConsoleCommand::Action(action))) => self.dispatch(action),
       Some(Ok(ConsoleCommand::OpenWith { argv, detach })) => self.open_with(argv, detach),
+      Some(Ok(ConsoleCommand::Rename(name))) => self.rename_selected(&name),
     }
+  }
+
+  /// Tab (`forward`) or Shift-Tab in the command line. When several candidates match,
+  /// pressing it again cycles through them, like ranger.
+  fn complete_command_line(&mut self, forward: bool) {
+    let Some(input) = self.console.as_ref().map(|e| e.input().to_string()) else {
+      return;
+    };
+    let cycling = self
+      .completion
+      .as_ref()
+      .is_some_and(|(lines, i)| lines.len() > 1 && lines[*i] == input);
+    if !cycling {
+      let programs = || {
+        self
+          .programs
+          .get_or_init(crate::opener::path_programs)
+          .as_slice()
+      };
+      let src = CompletionSource {
+        selected: self.selected().map(|e| e.name.as_str()),
+        programs: &programs,
+      };
+      let lines = console::completions(&input, &src);
+      if lines.is_empty() {
+        self.completion = None;
+        return;
+      }
+      // Shift-Tab starts from the last candidate, so the first step lands on it.
+      let start = if forward { lines.len() - 1 } else { 0 };
+      self.completion = Some((lines, start));
+    }
+    let Some((lines, i)) = &mut self.completion else {
+      return;
+    };
+    let len = lines.len();
+    *i = if forward {
+      (*i + 1) % len
+    } else {
+      (*i + len - 1) % len
+    };
+    let line = lines[*i].clone();
+    if let Some(editor) = &mut self.console {
+      editor.set_input(line);
+    }
+  }
+
+  /// Opens the command line as `rename <selected name>`, ready for editing.
+  fn prompt_rename(&mut self) {
+    let Some(name) = self.selected().map(|e| e.name.clone()) else {
+      self.set_error("nothing selected");
+      return;
+    };
+    self.keymap.reset();
+    self.console = Some(LineEditor::with_input(format!(
+      "{} {name}",
+      console::RENAME
+    )));
+  }
+
+  /// Renames the selected entry within the current directory.
+  fn rename_selected(&mut self, new_name: &str) {
+    let Some(entry) = self.selected().cloned() else {
+      self.set_error("nothing selected");
+      return;
+    };
+    if new_name == "." || new_name == ".." || new_name.contains(['/', '\0']) {
+      self.set_error(format!("rename: invalid name `{new_name}`"));
+      return;
+    }
+    if new_name == entry.name {
+      return;
+    }
+    let Some(dir) = entry.path.parent() else {
+      return;
+    };
+    let to = dir.join(new_name);
+    self.commands.push(Command::Rename {
+      from: entry.path,
+      to,
+    });
+  }
+
+  fn on_renamed(&mut self, from: PathBuf, to: PathBuf, result: Result<(), String>) {
+    if let Err(e) = result {
+      self.set_error(e);
+      return;
+    }
+    let (Some(dir), Some(name)) = (to.parent(), to.file_name()) else {
+      return;
+    };
+    let dir = dir.to_path_buf();
+    let name = crate::fs::entry::sanitize(&name.to_string_lossy());
+    // Listings under a renamed directory are stale.
+    self.dirs.retain(|p, _| !p.starts_with(&from));
+    self.counts.retain(|p, _| !p.starts_with(&from));
+    self.preview_cache.remove(&from);
+    self.set_info(format!("renamed to {name}"));
+    self.remembered.insert(dir.clone(), name.clone());
+    self.select_after_load = Some((dir.clone(), name));
+    self.request_dir(&dir, true);
   }
 
   /// Runs `argv` on the selected entry. Directories are passed as they are, not entered.
@@ -483,6 +613,7 @@ impl App {
         self.set_info(format!("hidden files {state}"));
       }
       Action::Sort(key) => self.set_sort(key),
+      Action::Rename => self.prompt_rename(),
       Action::Reload => self.reload(),
       Action::ToggleMetadata => {
         self.show_metadata = !self.show_metadata;
@@ -683,8 +814,12 @@ impl App {
   fn on_dir_loaded(&mut self, path: PathBuf, result: Result<DirListing, String>) {
     self.pending_dirs.remove(&path);
     let is_cwd = path == self.cwd;
+    let select = self
+      .select_after_load
+      .take_if(|(dir, _)| *dir == path)
+      .map(|(_, name)| name);
     let want = if is_cwd {
-      self.selected().map(|e| e.name.clone())
+      select.or_else(|| self.selected().map(|e| e.name.clone()))
     } else {
       None
     };

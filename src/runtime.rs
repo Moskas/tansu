@@ -34,6 +34,24 @@ pub fn load_dir(path: &Path) -> Event {
   }
 }
 
+/// Renames `from` to `to`, refusing to replace an existing entry.
+pub fn rename(from: &Path, to: &Path) -> Event {
+  let name = |p: &Path| {
+    p.file_name()
+      .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+  };
+  let result = if to.symlink_metadata().is_ok() {
+    Err(format!("rename: `{}` already exists", name(to)))
+  } else {
+    std::fs::rename(from, to).map_err(|e| format!("rename: {}: {e}", name(from)))
+  };
+  Event::Renamed {
+    from: from.to_path_buf(),
+    to: to.to_path_buf(),
+    result,
+  }
+}
+
 /// Runs the registry for one entry and, for images, encodes the result for `cells` when an
 /// encoder is available. Returns `None` if the job was cancelled.
 pub fn run_preview(
@@ -268,6 +286,10 @@ impl Runtime {
           return Some(e.to_string());
         }
       }
+      // A rename is a single fast syscall; it runs here so its result arrives in order.
+      Command::Rename { from, to } => {
+        let _ = self.tx.send(rename(&from, &to));
+      }
     }
     None
   }
@@ -289,6 +311,7 @@ pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLim
       out
     }
     Command::VcsScan(req) => VcsScanner::default().scan(&req).into_iter().collect(),
+    Command::Rename { from, to } => vec![rename(&from, &to)],
     Command::Open(_) | Command::Spawn { .. } | Command::CancelPreview => Vec::new(),
   }
 }

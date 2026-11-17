@@ -21,6 +21,7 @@ pub enum Action {
   ToggleHidden,
   ToggleMetadata,
   Sort(SortKey),
+  Rename,
   Reload,
   ToggleHelp,
   CommandLine,
@@ -28,7 +29,7 @@ pub enum Action {
 }
 
 impl Action {
-  pub const ALL: [Action; 21] = [
+  pub const ALL: [Action; 22] = [
     Action::MoveUp,
     Action::MoveDown,
     Action::MoveTop,
@@ -46,6 +47,7 @@ impl Action {
     Action::Sort(SortKey::Size),
     Action::Sort(SortKey::Mtime),
     Action::Sort(SortKey::Ctime),
+    Action::Rename,
     Action::Reload,
     Action::ToggleHelp,
     Action::CommandLine,
@@ -72,6 +74,7 @@ impl Action {
       Action::Sort(SortKey::Size) => "sort size",
       Action::Sort(SortKey::Mtime) => "sort mtime",
       Action::Sort(SortKey::Ctime) => "sort ctime",
+      Action::Rename => "rename",
       Action::Reload => "reload",
       Action::ToggleHelp => "toggle_help",
       Action::CommandLine => "command_line",
@@ -98,6 +101,7 @@ impl Action {
       Action::Sort(SortKey::Size) => "Sort by size, largest first",
       Action::Sort(SortKey::Mtime) => "Sort by modification time, newest first",
       Action::Sort(SortKey::Ctime) => "Sort by change time, newest first",
+      Action::Rename => "Rename the selection",
       Action::Reload => "Reload directory",
       Action::ToggleHelp => "Toggle this help",
       Action::CommandLine => "Open the command line",

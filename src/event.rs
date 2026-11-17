@@ -31,6 +31,12 @@ pub enum Event {
     image: Option<EncodedImage>,
   },
   Counts(Vec<(PathBuf, DirCount)>),
+  /// Result of renaming `from` to `to`.
+  Renamed {
+    from: PathBuf,
+    to: PathBuf,
+    result: Result<(), String>,
+  },
   /// VCS status for the entries of `dir`, plus the repositories involved.
   Vcs {
     dir: PathBuf,
