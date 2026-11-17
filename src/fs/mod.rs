@@ -4,6 +4,7 @@
 pub mod entry;
 pub mod listing;
 pub mod meta;
+pub mod path;
 pub mod sort;
 
 pub use entry::{DirCount, Entry, EntryKind, FileClass};

@@ -123,6 +123,8 @@ or `<C-c>` cancels, and `<BS>` on an empty line closes it. Editing keys: `<Left>
 
 | Command                            | Effect                                               |
 |------------------------------------|------------------------------------------------------|
+| `cd [path]`                        | Change directory; no path goes home, `-` goes back   |
+| `z [keywords...]`                  | Jump to the best zoxide match for the keywords       |
 | `open_with <program> [args...]`    | Run the program on the selection in the foreground   |
 | `open_with -d <program> [args...]` | Run the program on the selection, detached           |
 | `rename <new name>`                | Rename the selection within its directory            |
@@ -142,9 +144,21 @@ instead of entering it.
 to replace an existing entry, and the renamed entry stays selected. `r` opens the command line
 as `rename <selected name>`.
 
+`cd` takes the rest of the line as the path. It accepts absolute and relative paths and `~`;
+`..` is resolved on the typed path, so symlinked directories are kept as typed. A path to a
+file opens its directory with the file selected.
+
+`z` jumps through the [zoxide](https://github.com/ajeetdsouza/zoxide) database, like the shell
+function: `:z` alone goes home, `:z -` goes back, and an existing directory path works like
+`cd`. Anything else is passed to `zoxide query`, which picks the best match other than the
+current directory. Every directory entered in tansu is added to the database with
+`zoxide add`, so it ranks alongside directories visited in the shell; set `zoxide_add = false`
+to only read it.
+
 `<Tab>` completes the word being typed: command names first, then their arguments. `rename`
-completes to the selected name, `sort` to the sort types, and `open_with [-d]` to the programs
-on `PATH` (scanned the first time they are completed). When several candidates match, pressing
+completes to the selected name, `sort` to the sort types, `cd` to directories at the typed
+path (hidden ones once a `.` is typed), and `open_with [-d]` to the programs on `PATH`
+(scanned the first time they are completed). When several candidates match, pressing
 `<Tab>` again cycles through them and `<S-Tab>` cycles backward. Commands that take an argument
 complete with a trailing space, so the next `<Tab>` goes on to the argument.
 
@@ -175,6 +189,9 @@ column_ratios = [1, 3, 4]
 
 # Git status markers next to entries.
 vcs_aware = true
+
+# Add each directory entered to the zoxide database, like zoxide's shell hook.
+zoxide_add = true
 
 # Sizes in base 1024 with Ki/Mi units instead of base 1000 with k/M.
 binary_size_prefix = false

@@ -53,6 +53,13 @@ pub enum Command {
     from: PathBuf,
     to: PathBuf,
   },
+  /// Record a visit to this directory in the zoxide database.
+  ZoxideAdd(PathBuf),
+  /// Look up the best zoxide match for `keywords`, other than `exclude`.
+  Zoxide {
+    keywords: Vec<String>,
+    exclude: PathBuf,
+  },
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +163,8 @@ pub struct App {
   repos: HashMap<PathBuf, Arc<RepoStatus>>,
   /// Directories whose next VCS scan must bypass the cache (after reload).
   vcs_force: HashSet<PathBuf>,
+  /// Directory left by the last directory change, for `:cd -`.
+  previous_dir: Option<PathBuf>,
   /// Entry to select once the given directory is listed again (after a rename).
   select_after_load: Option<(PathBuf, String)>,
   commands: Vec<Command>,
@@ -203,6 +212,7 @@ impl App {
       vcs_dirs: HashMap::new(),
       repos: HashMap::new(),
       vcs_force: HashSet::new(),
+      previous_dir: None,
       select_after_load: None,
       commands: Vec::new(),
     };
@@ -350,6 +360,10 @@ impl App {
       } => self.on_preview(id, path, result, image),
       Event::Counts(counts) => self.counts.extend(counts),
       Event::Renamed { from, to, result } => self.on_renamed(from, to, result),
+      Event::Zoxide(result) => match result {
+        Ok(path) => self.go_to(path, console::Z),
+        Err(e) => self.set_error(e),
+      },
       Event::Vcs { dir, info, repos } => {
         self.vcs_dirs.insert(dir, info);
         for repo in repos {
@@ -401,6 +415,66 @@ impl App {
       Some(Ok(ConsoleCommand::Action(action))) => self.dispatch(action),
       Some(Ok(ConsoleCommand::OpenWith { argv, detach })) => self.open_with(argv, detach),
       Some(Ok(ConsoleCommand::Rename(name))) => self.rename_selected(&name),
+      Some(Ok(ConsoleCommand::Cd(path))) => self.cd(&path, console::CD),
+      Some(Ok(ConsoleCommand::Zoxide(words))) => self.zoxide(words),
+    }
+  }
+
+  /// `:cd`: no argument goes home, `-` to the previous directory, anything else is a path.
+  fn cd(&mut self, arg: &str, command: &str) {
+    let target = match arg {
+      "" => self.home.clone(),
+      "-" => self.previous_dir.clone(),
+      _ => Some(crate::fs::path::resolve(
+        arg,
+        &self.cwd,
+        self.home.as_deref(),
+      )),
+    };
+    match target {
+      Some(path) => self.go_to(path, command),
+      None if arg == "-" => self.set_error(format!("{command}: no previous directory")),
+      None => self.set_error(format!("{command}: home directory unknown")),
+    }
+  }
+
+  /// `:z`, behaving like the shell function: no argument, `-` or an existing directory
+  /// path work as in `:cd`; anything else is a zoxide query.
+  fn zoxide(&mut self, words: Vec<String>) {
+    if let [word] = words.as_slice() {
+      let path = crate::fs::path::resolve(word, &self.cwd, self.home.as_deref());
+      if word == "-" || path.is_dir() {
+        let word = word.clone();
+        self.cd(&word, console::Z);
+        return;
+      }
+    }
+    if words.is_empty() {
+      self.cd("", console::Z);
+      return;
+    }
+    self.commands.push(Command::Zoxide {
+      keywords: words,
+      exclude: self.cwd.clone(),
+    });
+  }
+
+  /// Opens `path`: a directory is entered, a file is selected in its directory.
+  fn go_to(&mut self, path: PathBuf, command: &str) {
+    match std::fs::metadata(&path) {
+      Ok(m) if m.is_dir() => self.enter_dir(path, None),
+      Ok(_) => {
+        let name = path
+          .file_name()
+          .map(|n| crate::fs::entry::sanitize(&n.to_string_lossy()));
+        if let Some(parent) = path.parent() {
+          self.enter_dir(parent.to_path_buf(), name);
+        }
+      }
+      Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        self.set_error(format!("{command}: {}: no such directory", path.display()));
+      }
+      Err(e) => self.set_error(format!("{command}: {}: {e}", path.display())),
     }
   }
 
@@ -421,9 +495,14 @@ impl App {
           .get_or_init(crate::opener::path_programs)
           .as_slice()
       };
+      let subdirs = |typed: &str| {
+        let dir = crate::fs::path::resolve(typed, &self.cwd, self.home.as_deref());
+        crate::fs::path::subdirectories(&dir)
+      };
       let src = CompletionSource {
         selected: self.selected().map(|e| e.name.as_str()),
         programs: &programs,
+        subdirs: &subdirs,
       };
       let lines = console::completions(&input, &src);
       if lines.is_empty() {
@@ -689,6 +768,12 @@ impl App {
     }
     if let Some(name) = select {
       self.remembered.insert(path.clone(), name);
+    }
+    if path != self.cwd {
+      self.previous_dir = Some(self.cwd.clone());
+      if self.config.zoxide_add {
+        self.commands.push(Command::ZoxideAdd(path.clone()));
+      }
     }
     self.cwd = path.clone();
     self.cursor = Cursor::default();

@@ -26,6 +26,8 @@ pub struct Config {
   pub column_ratios: [u16; 3],
   /// Show git status markers next to entries (like ranger's `vcs_aware`).
   pub vcs_aware: bool,
+  /// Add each directory entered to the zoxide database (`zoxide add`), like the shell hook.
+  pub zoxide_add: bool,
   /// Sizes in base 1024 with `Ki`/`Mi` units instead of base 1000 with `k`/`M`.
   pub binary_size_prefix: bool,
   /// Rows of context kept above and below the cursor while scrolling (like ranger's
@@ -51,6 +53,7 @@ impl Default for Config {
       opener: "xdg-open".to_string(),
       column_ratios: [1, 3, 4],
       vcs_aware: true,
+      zoxide_add: true,
       binary_size_prefix: false,
       scroll_offset: 8,
       preview_images: true,

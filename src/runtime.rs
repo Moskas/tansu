@@ -34,6 +34,67 @@ pub fn load_dir(path: &Path) -> Event {
   }
 }
 
+/// Asks zoxide for the best match for `keywords`, skipping `exclude` (the current
+/// directory) the way the shell's `z` does.
+pub fn zoxide_query(keywords: &[String], exclude: &Path) -> Event {
+  use std::os::unix::ffi::OsStrExt;
+  let output = std::process::Command::new("zoxide")
+    .arg("query")
+    .arg("--exclude")
+    .arg(exclude)
+    .arg("--")
+    .args(keywords)
+    .stdin(std::process::Stdio::null())
+    .output();
+  let result = match output {
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+      Err("z: zoxide is not installed".to_string())
+    }
+    Err(e) => Err(format!("z: could not run zoxide: {e}")),
+    Ok(out) if out.status.success() => {
+      let path = out.stdout.strip_suffix(b"\n").unwrap_or(&out.stdout);
+      Ok(PathBuf::from(std::ffi::OsStr::from_bytes(path)))
+    }
+    Ok(out) => {
+      let stderr = String::from_utf8_lossy(&out.stderr);
+      if stderr.contains("no match") {
+        Err(format!("z: no match for `{}`", keywords.join(" ")))
+      } else {
+        Err(format!("z: {}", stderr.trim()))
+      }
+    }
+  };
+  Event::Zoxide(result)
+}
+
+/// Starts the thread that records directory visits with `zoxide add`, one at a time so
+/// concurrent writes to the database cannot lose updates. Without zoxide installed it stops
+/// after the first attempt.
+fn spawn_zoxide_add_worker() -> Sender<PathBuf> {
+  let (tx, rx) = mpsc::channel::<PathBuf>();
+  let spawned = thread::Builder::new()
+    .name("zoxide-add".into())
+    .spawn(move || {
+      while let Ok(dir) = rx.recv() {
+        let status = std::process::Command::new("zoxide")
+          .arg("add")
+          .arg("--")
+          .arg(&dir)
+          .stdin(std::process::Stdio::null())
+          .stdout(std::process::Stdio::null())
+          .stderr(std::process::Stdio::null())
+          .status();
+        if matches!(&status, Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+          return;
+        }
+      }
+    });
+  if let Err(e) = spawned {
+    eprintln!("tansu: could not start zoxide worker: {e}");
+  }
+  tx
+}
+
 /// Renames `from` to `to`, refusing to replace an existing entry.
 pub fn rename(from: &Path, to: &Path) -> Event {
   let name = |p: &Path| {
@@ -221,6 +282,7 @@ pub struct Runtime {
   previews: LatestWorker<PreviewJob>,
   counts: LatestWorker<Vec<PathBuf>>,
   vcs: Sender<VcsRequest>,
+  zoxide_add: Sender<PathBuf>,
   opener: String,
 }
 
@@ -247,11 +309,13 @@ impl Runtime {
       });
     });
     let vcs = spawn_vcs_worker(tx.clone());
+    let zoxide_add = spawn_zoxide_add_worker();
     Runtime {
       tx,
       previews,
       counts,
       vcs,
+      zoxide_add,
       opener,
     }
   }
@@ -271,6 +335,9 @@ impl Runtime {
       Command::Preview { id, entry, cells } => self.previews.submit((id, entry, cells)),
       Command::CancelPreview => self.previews.cancel(),
       Command::CountDirs(dirs) => self.counts.submit(dirs),
+      Command::ZoxideAdd(dir) => {
+        let _ = self.zoxide_add.send(dir);
+      }
       Command::VcsScan(req) => {
         let _ = self.vcs.send(req);
       }
@@ -286,6 +353,15 @@ impl Runtime {
           return Some(e.to_string());
         }
       }
+      Command::Zoxide { keywords, exclude } => {
+        let tx = self.tx.clone();
+        let spawned = thread::Builder::new().name("zoxide".into()).spawn(move || {
+          let _ = tx.send(zoxide_query(&keywords, &exclude));
+        });
+        if let Err(e) = spawned {
+          return Some(format!("z: could not start zoxide: {e}"));
+        }
+      }
       // A rename is a single fast syscall; it runs here so its result arrives in order.
       Command::Rename { from, to } => {
         let _ = self.tx.send(rename(&from, &to));
@@ -295,7 +371,8 @@ impl Runtime {
   }
 }
 
-/// Runs a command to completion on the current thread. `Open` and `Spawn` are ignored.
+/// Runs a command to completion on the current thread. `Open`, `Spawn` and `ZoxideAdd` are
+/// ignored, so tests never touch the user's programs or zoxide database.
 pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLimits) -> Vec<Event> {
   let token = CancelToken::never();
   match cmd {
@@ -312,6 +389,9 @@ pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLim
     }
     Command::VcsScan(req) => VcsScanner::default().scan(&req).into_iter().collect(),
     Command::Rename { from, to } => vec![rename(&from, &to)],
-    Command::Open(_) | Command::Spawn { .. } | Command::CancelPreview => Vec::new(),
+    Command::Zoxide { keywords, exclude } => vec![zoxide_query(&keywords, &exclude)],
+    Command::Open(_) | Command::Spawn { .. } | Command::ZoxideAdd(_) | Command::CancelPreview => {
+      Vec::new()
+    }
   }
 }

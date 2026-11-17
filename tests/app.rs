@@ -972,3 +972,155 @@ fn tab_completes_command_then_selected_name() {
   press(&mut app, "<Tab>");
   assert_eq!(console_input(&app), "rename beta");
 }
+
+#[test]
+fn cd_enters_relative_absolute_and_previous_directories() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, ":cd alpha<Enter>");
+  assert_eq!(app.cwd, work.join("alpha"));
+  assert_eq!(names(&app), vec!["a.txt", "b.txt"]);
+  press(&mut app, ":cd ../beta/.<Enter>");
+  assert_eq!(app.cwd, work.join("beta"));
+  press(&mut app, ":cd -<Enter>");
+  assert_eq!(app.cwd, work.join("alpha"));
+  press(&mut app, ":cd -<Enter>");
+  assert_eq!(app.cwd, work.join("beta"));
+  let absolute = format!(":cd {}<Enter>", work.display());
+  press(&mut app, &absolute);
+  assert_eq!(app.cwd, work);
+}
+
+#[test]
+fn cd_to_a_file_selects_it_and_missing_paths_are_errors() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work.join("alpha"));
+  press(&mut app, ":cd ../file10.txt<Enter>");
+  assert_eq!(app.cwd, work);
+  assert_eq!(selected(&app), "file10.txt");
+  press(&mut app, ":cd nowhere<Enter>");
+  assert_eq!(app.cwd, work);
+  assert_eq!(
+    app.message.as_ref().unwrap().text,
+    format!("cd: {}: no such directory", work.join("nowhere").display())
+  );
+}
+
+#[test]
+fn cd_without_argument_goes_home() {
+  let (_tmp, work) = fixture();
+  let mut app = App::new(
+    Config {
+      icons: false,
+      vcs_aware: false,
+      ..Config::default()
+    },
+    Keymap::default(),
+    work.clone(),
+    None,
+    "tester@box".to_string(),
+    Some(work.join("beta")),
+  );
+  app.set_size(WIDTH, HEIGHT);
+  pump(&mut app);
+  press(&mut app, ":cd<Enter>");
+  assert_eq!(app.cwd, work.join("beta"));
+  press(&mut app, ":cd ~/../alpha<Enter>");
+  assert_eq!(app.cwd, work.join("alpha"));
+  press(&mut app, ":cd -<Enter>");
+  assert_eq!(app.cwd, work.join("beta"));
+}
+
+#[test]
+fn tab_completes_cd_directories() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, ":cd <Tab>");
+  assert_eq!(console_input(&app), "cd alpha/");
+  press(&mut app, "<Tab>");
+  assert_eq!(console_input(&app), "cd beta/");
+  press(&mut app, "<C-u>cd b<Tab>");
+  assert_eq!(console_input(&app), "cd beta/");
+  press(&mut app, "<Enter>");
+  assert_eq!(app.cwd, work.join("beta"));
+}
+
+#[test]
+fn z_queries_zoxide_and_enters_the_match() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, ":z foo bar");
+  press_keys_without_pump(&mut app, "<Enter>");
+  assert_eq!(
+    app.take_commands(),
+    vec![Command::Zoxide {
+      keywords: vec!["foo".into(), "bar".into()],
+      exclude: work.clone(),
+    }]
+  );
+  app.handle_event(tansu::event::Event::Zoxide(Ok(work.join("alpha"))));
+  pump(&mut app);
+  assert_eq!(app.cwd, work.join("alpha"));
+  app.handle_event(tansu::event::Event::Zoxide(Err(
+    "z: no match for `nope`".into(),
+  )));
+  assert_eq!(app.cwd, work.join("alpha"));
+  assert_eq!(app.message.as_ref().unwrap().text, "z: no match for `nope`");
+}
+
+#[test]
+fn z_with_a_directory_or_dash_works_like_cd() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, ":z beta");
+  press_keys_without_pump(&mut app, "<Enter>");
+  assert!(
+    !app
+      .take_commands()
+      .iter()
+      .any(|c| matches!(c, Command::Zoxide { .. }))
+  );
+  pump(&mut app);
+  assert_eq!(app.cwd, work.join("beta"));
+  press(&mut app, ":z -<Enter>");
+  assert_eq!(app.cwd, work);
+}
+
+#[test]
+fn entering_directories_records_them_in_zoxide_unless_disabled() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  // The start directory is not recorded; the shell already did that.
+  press_keys_without_pump(&mut app, "l");
+  let cmds = app.take_commands();
+  assert!(cmds.contains(&Command::ZoxideAdd(work.join("alpha"))));
+  pump(&mut app);
+  // Moving within a directory records nothing.
+  press_keys_without_pump(&mut app, "j");
+  assert!(
+    !app
+      .take_commands()
+      .iter()
+      .any(|c| matches!(c, Command::ZoxideAdd(_)))
+  );
+
+  let mut app = App::new(
+    Config {
+      zoxide_add: false,
+      ..Config::default()
+    },
+    Keymap::default(),
+    work.clone(),
+    None,
+    "tester@box".to_string(),
+    None,
+  );
+  pump(&mut app);
+  press_keys_without_pump(&mut app, "l");
+  assert!(
+    !app
+      .take_commands()
+      .iter()
+      .any(|c| matches!(c, Command::ZoxideAdd(_)))
+  );
+}

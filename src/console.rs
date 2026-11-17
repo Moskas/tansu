@@ -179,6 +179,10 @@ pub enum ConsoleCommand {
   OpenWith { argv: Vec<String>, detach: bool },
   /// Rename the selection to this name, taken verbatim (spaces included).
   Rename(String),
+  /// Change to this path, taken verbatim; empty means home and `-` the previous directory.
+  Cd(String),
+  /// Jump to the best zoxide match for these keywords, like the shell's `z`.
+  Zoxide(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -205,6 +209,12 @@ pub const SORT: &str = "sort";
 /// line prefilled with the current one.
 pub const RENAME: &str = "rename";
 
+/// Name of the command that changes directory.
+pub const CD: &str = "cd";
+
+/// Name of the command that jumps to a directory through zoxide.
+pub const Z: &str = "z";
+
 /// Flag of `open_with` that detaches the program instead of suspending tansu for it.
 pub const DETACH_FLAG: &str = "-d";
 
@@ -222,7 +232,16 @@ pub fn parse(line: &str) -> Option<Result<ConsoleCommand, ConsoleError>> {
       ConsoleCommand::Rename(new_name.to_string())
     }));
   }
-  Some(parse_words(name, words))
+  match name {
+    // Paths may contain spaces, so the rest of the line is the path.
+    CD => Some(Ok(ConsoleCommand::Cd(
+      rest_after_command(line).trim().to_string(),
+    ))),
+    Z => Some(Ok(ConsoleCommand::Zoxide(
+      words.map(str::to_string).collect(),
+    ))),
+    _ => Some(parse_words(name, words)),
+  }
 }
 
 /// The line after its first word, with the separating whitespace removed.
@@ -238,6 +257,8 @@ pub struct CompletionSource<'a> {
   pub selected: Option<&'a str>,
   /// Programs on `PATH`, for `open_with`. Only called when a program name is completed.
   pub programs: &'a dyn Fn() -> &'a [String],
+  /// Directory names inside a typed directory (`""`, `src/`, `~/`), for `cd`.
+  pub subdirs: &'a dyn Fn(&str) -> Vec<String>,
 }
 
 /// Names offered for the first word. Commands that take an argument end in a space so the
@@ -249,7 +270,7 @@ fn command_names() -> Vec<String> {
     .filter(|n| !n.contains(' ') && *n != RENAME)
     .map(str::to_string)
     .collect();
-  names.extend([OPEN_WITH, RENAME, SORT].map(|n| format!("{n} ")));
+  names.extend([CD, OPEN_WITH, RENAME, SORT, Z].map(|n| format!("{n} ")));
   names.sort();
   names.dedup();
   names
@@ -257,7 +278,8 @@ fn command_names() -> Vec<String> {
 
 /// Completed lines for Tab, in the order they are cycled through; empty when nothing
 /// matches. The first word completes to a command name; after it, `rename` offers the
-/// selected name, `sort` the sort types and `open_with [-d]` the programs on `PATH`.
+/// selected name, `sort` the sort types, `open_with [-d]` the programs on `PATH` and `cd`
+/// the directories at the typed path. Hidden directories are offered once a `.` is typed.
 pub fn completions(line: &str, src: &CompletionSource) -> Vec<String> {
   let line = line.trim_start();
   let Some(split) = line.find(char::is_whitespace) else {
@@ -274,6 +296,16 @@ pub fn completions(line: &str, src: &CompletionSource) -> Vec<String> {
       .map(|name| format!("{RENAME} {name}"))
       .into_iter()
       .collect(),
+    CD if arg == "~" => vec![format!("{CD} ~/")],
+    CD => {
+      let (dir, prefix) = arg.split_at(arg.rfind('/').map_or(0, |i| i + 1));
+      let hidden = prefix.starts_with('.');
+      (src.subdirs)(dir)
+        .into_iter()
+        .filter(|n| n.starts_with(prefix) && (hidden || !n.starts_with('.')))
+        .map(|n| format!("{CD} {dir}{n}/"))
+        .collect()
+    }
     SORT => SortKey::ALL
       .iter()
       .map(|k| k.name())

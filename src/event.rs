@@ -31,6 +31,8 @@ pub enum Event {
     image: Option<EncodedImage>,
   },
   Counts(Vec<(PathBuf, DirCount)>),
+  /// The directory zoxide picked for a `:z` query.
+  Zoxide(Result<PathBuf, String>),
   /// Result of renaming `from` to `to`.
   Renamed {
     from: PathBuf,

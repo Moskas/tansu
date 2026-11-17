@@ -791,13 +791,75 @@ fn complete_with(line: &str, selected: Option<&str>) -> Vec<String> {
   use tansu::console::{CompletionSource, completions};
   let programs = vec!["mpv".to_string(), "nvim".to_string(), "nvim-qt".to_string()];
   let list = || programs.as_slice();
+  let subdirs = |typed: &str| -> Vec<String> {
+    match typed {
+      "" => vec![".git", "docs", "src"],
+      "src/" => vec!["fs", "preview"],
+      "~/" => vec!["Downloads"],
+      _ => vec![],
+    }
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+  };
   completions(
     line,
     &CompletionSource {
       selected,
       programs: &list,
+      subdirs: &subdirs,
     },
   )
+}
+
+#[test]
+fn completes_cd_paths() {
+  assert_eq!(complete_with("cd ", None), vec!["cd docs/", "cd src/"]);
+  assert_eq!(complete_with("cd s", None), vec!["cd src/"]);
+  assert_eq!(complete_with("cd .", None), vec!["cd .git/"]);
+  assert_eq!(
+    complete_with("cd src/", None),
+    vec!["cd src/fs/", "cd src/preview/"]
+  );
+  assert_eq!(complete_with("cd src/p", None), vec!["cd src/preview/"]);
+  assert_eq!(complete_with("cd ~", None), vec!["cd ~/"]);
+  assert_eq!(complete_with("cd ~/D", None), vec!["cd ~/Downloads/"]);
+  assert!(complete_with("cd nope/", None).is_empty());
+  assert!(complete_with("z ", None).is_empty());
+}
+
+#[test]
+fn parses_cd_and_z_commands() {
+  assert_eq!(
+    parse("cd  ~/My Documents "),
+    Some(Ok(ConsoleCommand::Cd("~/My Documents".into())))
+  );
+  assert_eq!(parse("cd"), Some(Ok(ConsoleCommand::Cd(String::new()))));
+  assert_eq!(
+    parse("z foo  bar"),
+    Some(Ok(ConsoleCommand::Zoxide(vec!["foo".into(), "bar".into()])))
+  );
+  assert_eq!(parse("z"), Some(Ok(ConsoleCommand::Zoxide(Vec::new()))));
+}
+
+#[test]
+fn resolves_typed_paths() {
+  use std::path::{Path, PathBuf};
+  use tansu::fs::path::resolve;
+  let cwd = Path::new("/home/u/src");
+  let home = Some(Path::new("/home/u"));
+  assert_eq!(
+    resolve("docs", cwd, home),
+    PathBuf::from("/home/u/src/docs")
+  );
+  assert_eq!(resolve("../x/./y", cwd, home), PathBuf::from("/home/u/x/y"));
+  assert_eq!(resolve("/etc/../usr", cwd, home), PathBuf::from("/usr"));
+  assert_eq!(resolve("~", cwd, home), PathBuf::from("/home/u"));
+  assert_eq!(resolve("~/a", cwd, home), PathBuf::from("/home/u/a"));
+  assert_eq!(resolve("~a", cwd, home), PathBuf::from("/home/u/src/~a"));
+  assert_eq!(resolve("~", cwd, None), PathBuf::from("/home/u/src/~"));
+  assert_eq!(resolve("../../../..", cwd, home), PathBuf::from("/"));
+  assert_eq!(resolve("", cwd, home), PathBuf::from("/home/u/src"));
 }
 
 #[test]
@@ -808,6 +870,8 @@ fn completes_command_names() {
   );
   // Commands that take an argument get a trailing space.
   assert_eq!(complete_with("ren", None), vec!["rename "]);
+  assert_eq!(complete_with("c", None), vec!["cd ", "command_line"]);
+  assert_eq!(complete_with("z", None), vec!["z "]);
   assert_eq!(complete_with("  so", None), vec!["sort "]);
   assert_eq!(complete_with("open", None), vec!["open", "open_with "]);
   assert!(complete_with("zzz", None).is_empty());
@@ -871,4 +935,10 @@ fn programs_are_executables_on_path() {
     tansu::opener::programs_in(&path),
     vec!["alpha", "linked", "zeta"]
   );
+}
+
+#[test]
+fn zoxide_add_can_be_disabled() {
+  assert!(Config::default().zoxide_add);
+  assert!(!Config::parse("zoxide_add = false").unwrap().zoxide_add);
 }
