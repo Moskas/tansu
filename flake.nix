@@ -35,11 +35,6 @@
 
         tansu-unwrapped = naersk'.buildPackage {
           src = ./.;
-          nativeBuildInputs = with pkgs; [
-            pkg-config
-            sqlite
-          ];
-          buildInputs = with pkgs; [ openssl ];
         };
 
         # tansu with the preview tools on PATH. They are appended, so programs the user
@@ -73,17 +68,9 @@
               "clippy"
               "rustfmt"
             ])
-            sqlite
             cargo-audit
           ]
           ++ previewTools;
-          nativeBuildInputs = with pkgs; [
-            (openssl.override { static = true; })
-            pkg-config
-          ];
-          shellHook = ''
-            export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:${pkgs.lib.makeLibraryPath [ pkgs.sqlite ]}"
-          '';
         };
 
         devShells.default = devShell;
