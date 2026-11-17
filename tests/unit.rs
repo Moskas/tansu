@@ -1345,3 +1345,80 @@ fn image_details_need_the_image_to_keep_two_thirds_of_the_column() {
   assert_eq!(image_split(13, 9, true), (13, 0));
   assert_eq!(image_split(14, 9, false), (14, 0));
 }
+
+mod encodings {
+  use tansu::preview::encoding::decode_text;
+
+  #[test]
+  fn utf8_with_and_without_bom() {
+    let plain = decode_text("Café\n".as_bytes()).unwrap();
+    assert_eq!((plain.text.as_str(), plain.encoding), ("Café\n", "UTF-8"));
+    let bom = decode_text(b"\xef\xbb\xbfTITLE x\r\n").unwrap();
+    assert_eq!(bom.text, "TITLE x\r\n");
+  }
+
+  #[test]
+  fn utf16_logs_with_and_without_bom() {
+    let utf16 = |s: &str, le: bool| -> Vec<u8> {
+      s.encode_utf16()
+        .flat_map(|u| if le { u.to_le_bytes() } else { u.to_be_bytes() })
+        .collect()
+    };
+    let text = "Exact Audio Copy V1.0\r\n怒首領蜂\r\n";
+    let mut with_bom = vec![0xff, 0xfe];
+    with_bom.extend(utf16(text, true));
+    let decoded = decode_text(&with_bom).unwrap();
+    assert_eq!(
+      (decoded.text.as_str(), decoded.encoding),
+      (text, "UTF-16LE")
+    );
+    let bare_le = decode_text(&utf16(text, true)).unwrap();
+    assert_eq!(
+      (bare_le.text.as_str(), bare_le.encoding),
+      (text, "UTF-16LE")
+    );
+    let bare_be = decode_text(&utf16(text, false)).unwrap();
+    assert_eq!(
+      (bare_be.text.as_str(), bare_be.encoding),
+      (text, "UTF-16BE")
+    );
+  }
+
+  #[test]
+  fn legacy_encodings_are_detected() {
+    let (sjis, _, _) =
+      encoding_rs::SHIFT_JIS.encode("怒首領蜂最大往生 オリジナルサウンドトラック\n");
+    let decoded = decode_text(&sjis).unwrap();
+    assert_eq!(decoded.encoding, "Shift_JIS");
+    assert!(decoded.text.starts_with("怒首領蜂最大往生"));
+    let latin = b"PERFORMER \"Bj\xf6rk\"\nTITLE \"Caf\xe9 del Mar\"\n";
+    let decoded = decode_text(latin).unwrap();
+    assert_eq!(decoded.encoding, "windows-1252");
+    assert!(decoded.text.contains("Björk") && decoded.text.contains("Café"));
+  }
+
+  #[test]
+  fn mostly_utf8_text_with_a_few_broken_bytes_stays_utf8() {
+    let mut data = "無責任レコーズ - Communal Spirit/01. Moon.flac\n"
+      .repeat(5)
+      .into_bytes();
+    data.extend_from_slice(b"Logic & DJ \xe5\xa6\xa5\xfe\xa6\xf9 - 07.flac\n");
+    let decoded = decode_text(&data).unwrap();
+    assert_eq!(decoded.encoding, "UTF-8");
+    assert!(decoded.text.starts_with("無責任レコーズ"));
+  }
+
+  #[test]
+  fn binary_data_is_refused() {
+    assert!(decode_text(&[0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0]).is_none());
+    let noise: Vec<u8> = (0..2000u32)
+      .map(|i| (i * 7919 % 251) as u8 | 0x80)
+      .collect();
+    let mut noise = noise;
+    noise.extend((0..200u8).map(|i| i % 0x1f + 1));
+    assert!(
+      decode_text(&noise).is_none(),
+      "control characters mean binary"
+    );
+  }
+}

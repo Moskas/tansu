@@ -1952,6 +1952,7 @@ impl App {
         Preview::Text { lines, .. } => Some(lines.len()),
         Preview::Highlighted { lines, .. } => Some(lines.len()),
         Preview::Metadata(rows) => Some(rows.len()),
+        Preview::Listing(listing) => Some(listing.len()),
         Preview::Directory(_) | Preview::Image(_) => None,
       },
       _ => None,

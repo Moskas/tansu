@@ -75,6 +75,10 @@ text, an image, or a metadata block for everything else.
 - Text is highlighted by piping the first `max_lines` lines through
   [bat](https://github.com/sharkdp/bat) with `--style=plain --theme=ansi`, matching
   ranger's scope.sh. Without bat on `PATH`, previews fall back to plain text.
+- Text in any encoding is shown: UTF-8 (with or without a byte order mark), UTF-16 (as
+  Windows rippers write their logs) and legacy encodings such as Shift_JIS or
+  Windows-1252, detected with Mozilla's chardetng. UTF-8 files with a few broken bytes stay
+  UTF-8.
 - Images (PNG, JPEG, GIF, WebP, BMP, TIFF, ICO, QOI, TGA, PNM) are drawn with the graphics
   protocol the terminal supports (kitty, sixel or iTerm2), detected at startup. Other
   terminals get unicode half blocks. Formats that cannot be decoded, such as SVG, fall back
@@ -97,6 +101,14 @@ text, an image, or a metadata block for everything else.
   `ffprobe`. An embedded cover is shown above them as a small picture (at most 400 pixels a
   side, extracted by `ffmpeg`); the details stay below it down to a 4-row cover, and files
   without a cover show them in a metadata block.
+- Playlists (`.m3u`, `.m3u8`) list their entries, numbered, with `#EXTINF` titles and
+  durations (or file names, with the folder dimmed after them) and the total length. HLS
+  streaming playlists are summarised (segments, duration, variants). Cue sheets show the
+  album, performer, date, genre and file, then the tracks with their performers and, when
+  the tracks share one file, their lengths. CD rip logs from EAC, XLD, CUETools and whipper
+  get a summary (ripper, date, album, drive, read mode, tracks, AccurateRip result, errors,
+  log checksum) above the log; other `.log` files are plain text. Files not in UTF-8 name
+  their encoding. All of these scroll with `<C-j>` / `<C-k>`.
 - Ebooks and comics show their cover with the title, author, publisher and publication
   date (or the page count, for comics), read by tansu itself: EPUB covers from the package
   file's cover entry, MOBI/AZW3 covers from the Kindle metadata, and the first page image

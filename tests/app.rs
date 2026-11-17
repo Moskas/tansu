@@ -2300,3 +2300,41 @@ fn mkdir_and_touch_expand_a_leading_tilde() {
   );
   assert!(!work.join("~").exists());
 }
+
+#[test]
+fn playlists_render_as_numbered_entries_and_scroll() {
+  let tmp = tempfile::tempdir().unwrap();
+  let mut m3u = String::from("#EXTM3U\n");
+  for i in 1..=12 {
+    m3u.push_str(&format!("#EXTINF:{},Song {i}\nalbum/{i:02}.flac\n", 60 + i));
+  }
+  fs::write(tmp.path().join("list.m3u"), m3u).unwrap();
+  let mut app = new_app(tmp.path());
+  let screen = render(&app);
+  let preview: Vec<String> = screen
+    .iter()
+    .map(|l| l.chars().skip(31).take(28).collect::<String>())
+    .collect();
+  assert_eq!(preview[FIRST_ROW as usize].trim_end(), "Entries   12");
+  assert_eq!(
+    preview[FIRST_ROW as usize + 1].trim_end(),
+    "Duration  13:18"
+  );
+  assert!(preview[FIRST_ROW as usize + 2].starts_with("────"));
+  assert_eq!(
+    preview[FIRST_ROW as usize + 3],
+    " 1  Song 1 · album      1:01",
+    "number right-aligned, time flush right"
+  );
+  press(&mut app, "<C-j><C-j><C-j>");
+  let screen = render(&app);
+  let first: String = screen[FIRST_ROW as usize]
+    .chars()
+    .skip(31)
+    .take(28)
+    .collect();
+  assert_eq!(
+    first, " 1  Song 1 · album      1:01",
+    "details and rule scroll away"
+  );
+}

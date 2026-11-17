@@ -5,11 +5,15 @@ pub mod ansi;
 pub mod audio;
 mod directory;
 pub mod ebook;
+pub mod encoding;
 pub mod exif;
 pub mod highlight;
 mod image;
+pub mod listing;
 mod metadata;
 pub mod pdf;
+pub mod playlist;
+pub mod riplog;
 mod text;
 pub mod thumbnail;
 pub mod video;
@@ -27,6 +31,7 @@ pub use directory::DirectoryPreviewer;
 pub use ebook::EbookPreviewer;
 pub use highlight::{HighlightConfig, Highlighter};
 pub use image::{ImagePreviewer, PreviewImage};
+pub use listing::{Listing, ListingPreviewer, Row};
 pub use metadata::{MetadataPreviewer, metadata_lines};
 pub use pdf::PdfPreviewer;
 pub use text::{TextPreviewer, looks_binary};
@@ -47,6 +52,8 @@ pub enum Preview {
   Image(PreviewImage),
   Directory(Arc<DirListing>),
   Metadata(Vec<(String, String)>),
+  /// A structured view of a text file: a playlist, cue sheet or rip log.
+  Listing(Listing),
 }
 
 /// Caps that keep preview generation bounded no matter how large the input is.
@@ -123,10 +130,11 @@ impl PreviewRegistry {
     Self::default()
   }
 
-  /// Directory, text, then metadata as the catch-all.
+  /// Directory, playlists and other structured text, text, then metadata as the catch-all.
   pub fn with_defaults() -> Self {
     let mut r = Self::new();
     r.register(100, Box::new(DirectoryPreviewer));
+    r.register(60, Box::new(ListingPreviewer));
     r.register(50, Box::new(TextPreviewer::default()));
     r.register(0, Box::new(MetadataPreviewer));
     r
@@ -145,6 +153,8 @@ impl PreviewRegistry {
     r.register(70, Box::new(PdfPreviewer { pages: images }));
     r.register(70, Box::new(EbookPreviewer { covers: images }));
     r.register(70, Box::new(AudioPreviewer { covers: images }));
+    // Ahead of text: playlists, cue sheets and rip logs are text with a structure.
+    r.register(60, Box::new(ListingPreviewer));
     let text = if highlight.enabled {
       TextPreviewer::with_highlighter(Highlighter::new(highlight.clone()))
     } else {

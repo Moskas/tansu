@@ -14,7 +14,7 @@ use crate::config::Theme;
 use crate::fs::meta::human_size;
 use crate::fs::{Entry, EntryKind, FileClass};
 use crate::nav::passive_offset;
-use crate::preview::{Preview, SpanStyle, TermColor, metadata_lines};
+use crate::preview::{Listing, Preview, Row, SpanStyle, TermColor, metadata_lines};
 use crate::vcs::{FileStatus, Mark, RemoteStatus};
 
 pub fn render(buf: &mut Buffer, area: Rect, app: &App) {
@@ -176,6 +176,7 @@ fn render_preview(buf: &mut Buffer, area: Rect, app: &App) {
       }
     },
     Preview::Metadata(rows) => draw_metadata(buf, area, rows, slot.scroll, theme),
+    Preview::Listing(listing) => draw_listing(buf, area, listing, slot.scroll, theme),
   }
 }
 
@@ -197,6 +198,7 @@ pub fn metadata_rows(entry: &Entry, status: &PreviewStatus) -> Vec<(String, Stri
     Some(Preview::Text { .. } | Preview::Highlighted { .. }) if !entry.is_executable() => {
       Some("text file")
     }
+    Some(Preview::Listing(listing)) => Some(listing.kind),
     Some(Preview::Image(_)) if photo => Some("image"),
     Some(Preview::Image(image)) => image.label.or(class_label(entry.class())),
     _ => None,
@@ -235,21 +237,111 @@ fn draw_metadata(
   skip: usize,
   theme: &Theme,
 ) {
-  let key_w = rows
+  let key_w = key_width(rows);
+  let shown = rows.iter().skip(skip).take(area.height as usize);
+  for (row, (key, value)) in shown.enumerate() {
+    let line = Rect::new(area.x, area.y + row as u16, area.width, 1);
+    draw_key_value(buf, line, key, value, key_w, theme);
+  }
+}
+
+fn key_width(rows: &[(String, String)]) -> usize {
+  rows
     .iter()
     .map(|(k, _)| display_width(k))
     .max()
-    .unwrap_or(0);
+    .unwrap_or(0)
+}
+
+/// `Key    value` on `line`, the value starting after the widest key (`key_w`).
+fn draw_key_value(
+  buf: &mut Buffer,
+  line: Rect,
+  key: &str,
+  value: &str,
+  key_w: usize,
+  theme: &Theme,
+) {
   let key_style = Style::new().fg(theme.dim.0);
   let val_style = Style::new().fg(theme.fg.0);
-  let shown = rows.iter().skip(skip).take(area.height as usize);
-  for (row, (key, value)) in shown.enumerate() {
-    let y = area.y + row as u16;
-    let (x, _) = buf.set_stringn(area.x, y, key, area.width as usize, key_style);
-    let used = (x - area.x) as usize + (key_w - display_width(key)) + 2;
-    if used < area.width as usize {
-      let room = area.width as usize - used;
-      buf.set_stringn(area.x + used as u16, y, value, room, val_style);
+  let (x, _) = buf.set_stringn(line.x, line.y, key, line.width as usize, key_style);
+  let used = (x - line.x) as usize + (key_w.saturating_sub(display_width(key))) + 2;
+  if used < line.width as usize {
+    let room = line.width as usize - used;
+    buf.set_stringn(line.x + used as u16, line.y, value, room, val_style);
+  }
+}
+
+/// A playlist, cue sheet or rip log from line `skip` on: the details, a rule, then the
+/// entries (`number  title · detail      time`) or lines of text.
+fn draw_listing(buf: &mut Buffer, area: Rect, listing: &Listing, skip: usize, theme: &Theme) {
+  let key_w = key_width(&listing.info);
+  let number_w = listing
+    .rows
+    .iter()
+    .filter_map(|r| match r {
+      Row::Entry { number, .. } => Some(display_width(number)),
+      Row::Text(_) => None,
+    })
+    .max()
+    .unwrap_or(0);
+  let has_rule = !listing.info.is_empty() && !listing.rows.is_empty();
+  let dim = Style::new().fg(theme.dim.0);
+  let fg = Style::new().fg(theme.fg.0);
+  let width = area.width as usize;
+  for screen_row in 0..area.height {
+    let i = skip + screen_row as usize;
+    let line = Rect::new(area.x, area.y + screen_row, area.width, 1);
+    if let Some((key, value)) = listing.info.get(i) {
+      draw_key_value(buf, line, key, value, key_w, theme);
+      continue;
+    }
+    let mut r = i - listing.info.len();
+    if has_rule {
+      if r == 0 {
+        let rule = "─".repeat(width);
+        buf.set_string(line.x, line.y, rule, Style::new().fg(theme.border.0));
+        continue;
+      }
+      r -= 1;
+    }
+    match listing.rows.get(r) {
+      None => break,
+      Some(Row::Text(text)) => {
+        buf.set_stringn(line.x, line.y, text, width, fg);
+      }
+      Some(Row::Entry {
+        number,
+        title,
+        detail,
+        time,
+      }) => {
+        // Time flush right; number right-aligned in its column; the title (and detail)
+        // in between, truncated to fit.
+        let time_w = time.as_deref().map_or(0, |t| display_width(t) + 1);
+        let pad = number_w.saturating_sub(display_width(number));
+        let lead = pad + display_width(number) + 2;
+        if lead + time_w >= width {
+          buf.set_stringn(line.x, line.y, truncate(title, width), width, fg);
+          continue;
+        }
+        let x = line.x + pad as u16;
+        buf.set_stringn(x, line.y, number, display_width(number), dim);
+        let room = width - lead - time_w;
+        let title_text = truncate(title, room);
+        let (x, _) = buf.set_stringn(line.x + lead as u16, line.y, &title_text, room, fg);
+        if let Some(detail) = detail {
+          let used = (x - line.x) as usize - lead;
+          if room > used + 3 {
+            let text = format!(" · {detail}");
+            buf.set_stringn(x, line.y, truncate(&text, room - used), room - used, dim);
+          }
+        }
+        if let Some(time) = time {
+          let tx = line.right() - display_width(time) as u16;
+          buf.set_stringn(tx, line.y, time, display_width(time), dim);
+        }
+      }
     }
   }
 }

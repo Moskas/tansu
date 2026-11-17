@@ -1130,3 +1130,294 @@ fn ffprobe_tags_become_music_details() {
     ]
   );
 }
+
+fn entries(
+  listing: &tansu::preview::Listing,
+) -> Vec<(String, String, Option<String>, Option<String>)> {
+  listing
+    .rows
+    .iter()
+    .filter_map(|r| match r {
+      tansu::preview::Row::Entry {
+        number,
+        title,
+        detail,
+        time,
+      } => Some((number.clone(), title.clone(), detail.clone(), time.clone())),
+      tansu::preview::Row::Text(_) => None,
+    })
+    .collect()
+}
+
+fn e(
+  n: &str,
+  title: &str,
+  detail: Option<&str>,
+  time: Option<&str>,
+) -> (String, String, Option<String>, Option<String>) {
+  (
+    n.to_string(),
+    title.to_string(),
+    detail.map(str::to_string),
+    time.map(str::to_string),
+  )
+}
+
+#[test]
+fn m3u_playlists_list_titles_folders_and_durations() {
+  let listing = tansu::preview::playlist::parse_m3u(
+    "#EXTM3U\r\n#PLAYLIST:Road trip\r\n\
+     #EXTINF:201,P-Model - Heaven 2000\r\n01 - Heaven 2000.flac\r\n\
+     (2010) - dancefloor degrader - (flac)/02 - goreshit - hardcore bisnis.flac\r\n\
+     C:\\Music\\Album\\03%20Track.mp3\r\n\
+     #EXTINF:-1,Radio\r\nhttps://example.com/stream/live.aac?token=1\r\n",
+  );
+  assert_eq!(listing.kind, "playlist");
+  assert_eq!(
+    entries(&listing),
+    vec![
+      e("1", "P-Model - Heaven 2000", None, Some("3:21")),
+      e(
+        "2",
+        "02 - goreshit - hardcore bisnis",
+        Some("(2010) - dancefloor degrader - (flac)"),
+        None
+      ),
+      e("3", "03 Track", Some("Album"), None),
+      e("4", "Radio", Some("stream"), None),
+    ]
+  );
+  assert_eq!(
+    listing.info,
+    vec![
+      ("Name".to_string(), "Road trip".to_string()),
+      ("Entries".to_string(), "4".to_string()),
+      (
+        "Duration".to_string(),
+        "3:21 (1 of 4 entries timed)".to_string()
+      ),
+    ]
+  );
+}
+
+#[test]
+fn hls_playlists_are_summarised() {
+  let media = tansu::preview::playlist::parse_m3u(
+    "#EXTM3U\n#EXT-X-TARGETDURATION:12\n#EXT-X-PLAYLIST-TYPE:VOD\n\
+     #EXTINF:10.0,\na.ts\n#EXTINF:12.5,\nb.ts\n#EXT-X-ENDLIST\n",
+  );
+  let info: Vec<(&str, &str)> = media
+    .info
+    .iter()
+    .map(|(k, v)| (k.as_str(), v.as_str()))
+    .collect();
+  assert_eq!(
+    info,
+    vec![
+      ("Type", "HLS media playlist"),
+      ("Segments", "2"),
+      ("Duration", "0:23"),
+      ("Segment length", "12 s at most"),
+      ("Stream", "complete"),
+    ]
+  );
+  assert!(media.rows.is_empty());
+
+  let master = tansu::preview::playlist::parse_m3u(
+    "#EXTM3U\n\
+     #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS=\"avc1.640028,mp4a.40.2\",FRAME-RATE=30\n\
+     hi.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=128000,CODECS=\"mp4a.40.2\"\naudio.m3u8\n",
+  );
+  assert_eq!(
+    entries(&master),
+    vec![
+      e(
+        "1",
+        "1920x1080",
+        Some("5 Mb/s, avc1.640028,mp4a.40.2"),
+        Some("30 fps")
+      ),
+      e("2", "audio", Some("128 kb/s, mp4a.40.2"), None),
+    ]
+  );
+}
+
+#[test]
+fn cue_sheets_list_tracks_with_lengths_from_one_file() {
+  let listing = tansu::preview::playlist::parse_cue(
+    "REM GENRE \"New Wave\"\r\nREM DATE 2002\r\nPERFORMER \"P-Model\"\r\n\
+     TITLE \"Big Album\"\r\nFILE \"Big Album.flac\" WAVE\r\n\
+       TRACK 01 AUDIO\r\n    TITLE \"Opening\"\r\n    PERFORMER \"P-Model\"\r\n    INDEX 01 00:00:00\r\n\
+       TRACK 02 AUDIO\r\n    TITLE \"Guest Song\"\r\n    PERFORMER \"Guest\"\r\n    INDEX 00 03:20:00\r\n    INDEX 01 03:21:37\r\n\
+       TRACK 03 AUDIO\r\n    INDEX 01 07:00:00\r\n",
+  );
+  assert_eq!(listing.kind, "cue sheet");
+  let info: Vec<(&str, &str)> = listing
+    .info
+    .iter()
+    .map(|(k, v)| (k.as_str(), v.as_str()))
+    .collect();
+  assert_eq!(
+    info,
+    vec![
+      ("Album", "Big Album"),
+      ("Performer", "P-Model"),
+      ("Date", "2002"),
+      ("Genre", "New Wave"),
+      ("File", "Big Album.flac"),
+      ("Tracks", "3"),
+    ]
+  );
+  assert_eq!(
+    entries(&listing),
+    vec![
+      e("01", "Opening", None, Some("3:21")),
+      e("02", "Guest Song", Some("Guest"), Some("3:39")),
+      e("03", "Track 03", None, None),
+    ]
+  );
+}
+
+const EAC_LOG: &str = "Exact Audio Copy V1.0 beta 3 from 29. August 2011\r\n\r\n\
+EAC extraction logfile from 9. June 2012, 13:25\r\n\r\n\
+CAVE / 怒首領蜂最大往生 Original Soundtrack\r\n\r\n\
+Used drive  : ASUS    BC-08B1LT   Adapter: 2  ID: 2\r\n\r\n\
+Read mode               : Secure\r\n\r\n\r\n\r\n\
+Track  1\r\n\r\n     Filename C:\\01.wav\r\n     Suspicious position 0:02:20\r\n\
+     Accurately ripped (confidence 5)  [ABCD1234]  (AR v2)\r\n     Copy OK\r\n\r\n\
+Track  2\r\n\r\n     Copy OK\r\n\r\n\
+All tracks accurately ripped\r\n\r\nThere were errors\r\n\r\nEnd of status report\r\n\r\n\
+==== Log checksum FA67A2FD ====\r\n";
+
+#[test]
+fn eac_logs_are_summarised_above_the_log() {
+  let listing = tansu::preview::riplog::parse(EAC_LOG).unwrap();
+  assert_eq!(listing.kind, "rip log");
+  let info: Vec<(&str, &str)> = listing
+    .info
+    .iter()
+    .map(|(k, v)| (k.as_str(), v.as_str()))
+    .collect();
+  assert_eq!(
+    info,
+    vec![
+      ("Ripper", "Exact Audio Copy V1.0 beta 3"),
+      ("Ripped", "9. June 2012, 13:25"),
+      ("Album", "CAVE / 怒首領蜂最大往生 Original Soundtrack"),
+      ("Drive", "ASUS BC-08B1LT"),
+      ("Read mode", "Secure"),
+      ("Tracks", "2"),
+      ("AccurateRip", "All tracks accurately ripped"),
+      ("Errors", "1 suspicious position"),
+      ("Checksum", "present"),
+    ]
+  );
+  // The log follows, without its runs of blank lines.
+  let text: Vec<&str> = listing
+    .rows
+    .iter()
+    .map(|r| match r {
+      tansu::preview::Row::Text(t) => t.as_str(),
+      _ => panic!("logs are text"),
+    })
+    .collect();
+  assert_eq!(text[0], "Exact Audio Copy V1.0 beta 3 from 29. August 2011");
+  assert!(!text.windows(2).any(|w| w[0].is_empty() && w[1].is_empty()));
+}
+
+#[test]
+fn xld_cuetools_and_whipper_logs_are_recognised_and_others_are_not() {
+  let xld = tansu::preview::riplog::parse(
+    "X Lossless Decoder version 20230627 (155.2)\n\n\
+     XLD extraction logfile from 2023-07-01 12:00:00 +0900\n\nArtist / Album\n\n\
+     Used drive : PIONEER BD-RW BDR-XD07\nRipper mode : XLD Secure Ripper\n\n\
+     AccurateRip Summary\n    ->All tracks accurately ripped.\n\nTrack 01\n\nNo errors occurred\n\n\
+     -----BEGIN XLD SIGNATURE-----\nabc\n-----END XLD SIGNATURE-----\n",
+  )
+  .unwrap();
+  let get = |l: &tansu::preview::Listing, k: &str| {
+    l.info
+      .iter()
+      .find(|(key, _)| key == k)
+      .map(|(_, v)| v.clone())
+  };
+  assert_eq!(get(&xld, "Read mode").as_deref(), Some("XLD Secure Ripper"));
+  assert_eq!(
+    get(&xld, "AccurateRip").as_deref(),
+    Some("All tracks accurately ripped.")
+  );
+  assert_eq!(get(&xld, "Errors").as_deref(), Some("none"));
+  assert_eq!(get(&xld, "Checksum").as_deref(), Some("present"));
+
+  let cuetools = tansu::preview::riplog::parse(
+    "[CUETools log; Date: 1/2/2020 3:04:05 AM; Version: 2.1.6]\n[AccurateRip ID: 0012-ab] found.\n",
+  )
+  .unwrap();
+  assert_eq!(get(&cuetools, "Ripper").as_deref(), Some("CUETools 2.1.6"));
+  assert_eq!(
+    get(&cuetools, "Date").as_deref(),
+    Some("1/2/2020 3:04:05 AM")
+  );
+
+  let whipper = tansu::preview::riplog::parse(
+    "Log created by: whipper 0.10.0 (internal logger)\nLog creation date: 2021-01-01T00:00:00Z\n\
+     Health status: No errors occurred\n",
+  )
+  .unwrap();
+  assert_eq!(
+    get(&whipper, "Health").as_deref(),
+    Some("No errors occurred")
+  );
+
+  assert!(tansu::preview::riplog::parse("2024-01-01 server started\n").is_none());
+}
+
+#[test]
+fn other_logs_stay_plain_text_and_utf16_logs_are_decoded() {
+  let tmp = tempfile::tempdir().unwrap();
+  let registry = PreviewRegistry::with_defaults();
+  let plain = tmp.path().join("server.log");
+  fs::write(&plain, "started\nlistening\n").unwrap();
+  assert!(matches!(
+    preview_of(&registry, &plain),
+    Preview::Text { .. }
+  ));
+
+  // A UTF-16 EAC log: NUL bytes everywhere, yet text.
+  let rip = tmp.path().join("rip.log");
+  let mut data = vec![0xff, 0xfe];
+  data.extend(EAC_LOG.encode_utf16().flat_map(u16::to_le_bytes));
+  fs::write(&rip, data).unwrap();
+  let Preview::Listing(listing) = preview_of(&registry, &rip) else {
+    panic!("expected a rip log listing");
+  };
+  assert_eq!(
+    listing.info.last(),
+    Some(&("Encoding".to_string(), "UTF-16LE".to_string()))
+  );
+
+  // A UTF-16 text file that is not a rip log is still text, not binary.
+  let notes = tmp.path().join("notes.txt");
+  let mut data = vec![0xff, 0xfe];
+  data.extend("hello\nworld\n".encode_utf16().flat_map(u16::to_le_bytes));
+  fs::write(&notes, data).unwrap();
+  match preview_of(&registry, &notes) {
+    Preview::Text { lines, .. } => assert_eq!(lines, vec!["hello", "world"]),
+    other => panic!("expected text, got {other:?}"),
+  }
+}
+
+#[test]
+fn listings_are_cleaned_of_control_characters() {
+  let tmp = tempfile::tempdir().unwrap();
+  let file = tmp.path().join("evil.m3u");
+  fs::write(&file, "#EXTINF:10,Bad\x1b]0;title\x07Song\tTab\nsong.mp3\n").unwrap();
+  let Preview::Listing(listing) = preview_of(&PreviewRegistry::with_defaults(), &file) else {
+    panic!("expected a listing");
+  };
+  let (_, title, _, _) = &entries(&listing)[0];
+  assert!(
+    !title.chars().any(|c| c.is_control() && c != ' '),
+    "{title:?}"
+  );
+}

@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::Read;
 
+use super::encoding::decode_text;
 use super::highlight::Highlighter;
 use super::{Preview, PreviewContext, PreviewError, Previewer};
 use crate::fs::{Entry, EntryKind};
@@ -49,12 +50,12 @@ impl Previewer for TextPreviewer {
       };
       data.extend_from_slice(&chunk[..n]);
     }
-    if looks_binary(&data) {
+    let Some(decoded) = decode_text(&data) else {
       return Ok(None);
-    }
+    };
     let byte_capped =
       data.len() as u64 >= ctx.limits.max_bytes as u64 && entry.size > data.len() as u64;
-    let text = decode(&data);
+    let text = decoded.text;
     let mut raw = Vec::new();
     let mut truncated = byte_capped;
     for line in text.split('\n') {
@@ -84,32 +85,13 @@ impl Previewer for TextPreviewer {
   }
 }
 
-/// Heuristic: NUL bytes, or many invalid UTF-8 sequences, mean binary.
+/// Whether `data` (the start of a file) is binary rather than text in some encoding.
 pub fn looks_binary(data: &[u8]) -> bool {
-  if data.contains(&0) {
-    return true;
-  }
-  let text = String::from_utf8_lossy(data);
-  let bad = text
-    .chars()
-    .filter(|&c| c == char::REPLACEMENT_CHARACTER)
-    .count();
-  let total = text.chars().count().max(1);
-  // A few bad sequences are tolerated (e.g. a multi-byte char cut off at the read cap).
-  bad > 4 && bad * 20 > total
-}
-
-fn decode(data: &[u8]) -> String {
-  match std::str::from_utf8(data) {
-    Ok(s) => s.to_string(),
-    // Drop an incomplete trailing sequence caused by the byte cap.
-    Err(e) if e.error_len().is_none() => String::from_utf8_lossy(&data[..e.valid_up_to()]).into(),
-    Err(_) => String::from_utf8_lossy(data).into_owned(),
-  }
+  decode_text(data).is_none()
 }
 
 /// Expands tabs and replaces control characters so the line is safe to draw.
-fn clean_line(line: &str) -> String {
+pub(super) fn clean_line(line: &str) -> String {
   let mut out = String::with_capacity(line.len());
   let mut col = 0;
   for c in line.chars() {
