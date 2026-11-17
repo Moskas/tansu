@@ -60,17 +60,19 @@
         };
 
         devShell = pkgs.mkShell {
-          buildInputs = with pkgs; [
-            (pkgs.fenix.stable.withComponents [
-              "rustc"
-              "cargo"
-              "rust-analyzer"
-              "clippy"
-              "rustfmt"
-            ])
-            cargo-audit
-          ]
-          ++ previewTools;
+          buildInputs =
+            with pkgs;
+            [
+              (pkgs.fenix.stable.withComponents [
+                "rustc"
+                "cargo"
+                "rust-analyzer"
+                "clippy"
+                "rustfmt"
+              ])
+              cargo-audit
+            ]
+            ++ previewTools;
         };
 
         devShells.default = devShell;
