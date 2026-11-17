@@ -1,6 +1,7 @@
 //! Turning typed paths (`:cd ~/src/../docs`) into absolute ones, and listing directories for
 //! completion.
 
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
 use super::sort::natural_cmp;
@@ -32,6 +33,15 @@ pub fn normalize(path: &Path) -> PathBuf {
   out
 }
 
+/// The ancestors of `dir`, itself included, that are symlinks. One `lstat` per component.
+pub fn symlinked_ancestors(dir: &Path) -> HashSet<PathBuf> {
+  dir
+    .ancestors()
+    .filter(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()))
+    .map(Path::to_path_buf)
+    .collect()
+}
+
 /// Names of the directories (symlinks to directories included) inside `dir`, in natural
 /// order. An unreadable directory has none.
 pub fn subdirectories(dir: &Path) -> Vec<String> {
@@ -45,4 +55,21 @@ pub fn subdirectories(dir: &Path) -> Vec<String> {
     .collect();
   names.sort_by(|a, b| natural_cmp(a, b));
   names
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn finds_symlinked_ancestors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let real = tmp.path().join("real");
+    std::fs::create_dir_all(real.join("sub")).unwrap();
+    let link = tmp.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let found = symlinked_ancestors(&link.join("sub"));
+    assert_eq!(found, HashSet::from([link]));
+    assert!(symlinked_ancestors(&real.join("sub")).is_empty());
+  }
 }

@@ -164,6 +164,8 @@ pub struct App {
   pub uid: u32,
   pub home: Option<PathBuf>,
   pub cwd: PathBuf,
+  /// Components of `cwd` that are symlinks (as paths, `cwd` included), for the header.
+  pub cwd_symlinks: HashSet<PathBuf>,
   pub show_hidden: bool,
   /// Order of entries in every listing; directories always come first.
   pub sort: SortKey,
@@ -226,6 +228,7 @@ impl App {
       uid: crate::fs::meta::current_uid(),
       home,
       cwd: start.clone(),
+      cwd_symlinks: HashSet::new(),
       show_help: false,
       console: None,
       completion: None,
@@ -1043,6 +1046,7 @@ impl App {
       }
     }
     self.cwd = path.clone();
+    self.cwd_symlinks = crate::fs::path::symlinked_ancestors(&path);
     self.cursor = Cursor::default();
     self.visible.clear();
     self.rebuild_visible(None);

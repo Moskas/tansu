@@ -213,7 +213,7 @@ impl Default for Theme {
       dim: hex(0x928374),
       border: hex(0xd5c4a1),
       header_user: hex(0xb8bb26),
-      header_path: hex(0xebdbb2),
+      header_path: ThemeColor(Color::LightBlue),
       // The terminal palette's bright blue, the color ranger uses for directories.
       directory: ThemeColor(Color::LightBlue),
       file: hex(0xebdbb2),
