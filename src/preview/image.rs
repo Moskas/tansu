@@ -16,6 +16,9 @@ pub struct PreviewImage {
   pub height: u32,
   /// Details shown under the image and in the metadata view (EXIF data, for photos).
   pub info: Vec<(String, String)>,
+  /// What the image shows when it is a rendering of another kind of file (`video`, `PDF
+  /// document`); `None` for image files.
+  pub label: Option<&'static str>,
 }
 
 impl std::fmt::Debug for PreviewImage {
@@ -82,6 +85,7 @@ impl Previewer for ImagePreviewer {
       width,
       height,
       info: exif.map(super::exif::summary).unwrap_or_default(),
+      label: None,
     })))
   }
 }

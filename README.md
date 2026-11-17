@@ -92,11 +92,16 @@ text, an image, or a metadata block for everything else.
   page size and creation date from `pdfinfo` below it. Without poppler (or without
   graphics) the details are shown in a metadata block; a file poppler cannot read falls back
   to the text or metadata preview.
-- Rendered previews (video frames, PDF pages) are scaled to at most 2048 pixels a side and
-  cached in `$XDG_CACHE_HOME/tansu/thumbnails` (usually `~/.cache/tansu/thumbnails`,
-  readable only by the user), keyed by path, size and modification time, so a file is only
-  rendered again after it changes. The cache keeps the 1000 most recent thumbnails, up to
-  256 MiB. External programs get 10 seconds before they are stopped.
+- Ebooks and comics show their cover with the title, author, publisher and publication
+  date (or the page count, for comics), read by tansu itself: EPUB covers from the package
+  file's cover entry, MOBI/AZW3 covers from the Kindle metadata, and the first page image
+  of a CBZ. Damaged files fall back to the metadata preview.
+- Rendered previews (video frames, PDF pages, covers) are scaled to at most 2048 pixels a
+  side and cached in `$XDG_CACHE_HOME/tansu/thumbnails` (usually
+  `~/.cache/tansu/thumbnails`, readable only by the user), keyed by path, size and
+  modification time, so a file is only rendered again after it changes. The cache keeps the
+  1000 most recent thumbnails, up to 256 MiB. External programs get 10 seconds before they
+  are stopped.
 - `i` switches file previews to a metadata block (size, mode, owner, modification time,
   and dimensions for images) and back. The mode stays on while moving; directories keep
   showing their contents.

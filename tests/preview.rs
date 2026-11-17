@@ -704,3 +704,256 @@ fn damaged_pdfs_fall_back_to_other_previewers() {
   let preview = preview_of(&registry, &file);
   assert!(!matches!(preview, Preview::Image(_)), "got {preview:?}");
 }
+
+/// A 6x9 PNG of one color, to tell covers apart.
+fn png(color: [u8; 3]) -> Vec<u8> {
+  let mut out = std::io::Cursor::new(Vec::new());
+  image::RgbImage::from_pixel(6, 9, image::Rgb(color))
+    .write_to(&mut out, image::ImageFormat::Png)
+    .unwrap();
+  out.into_inner()
+}
+
+const RED: [u8; 3] = [200, 0, 0];
+const GREEN: [u8; 3] = [0, 200, 0];
+const BLUE: [u8; 3] = [0, 0, 200];
+
+/// A zip of `(name, content)` members, compressed like real EPUBs and comics.
+fn zip_file(path: &Path, members: &[(&str, &[u8])]) {
+  use std::io::Write as _;
+  let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+  let options =
+    zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+  for (name, content) in members {
+    zip.start_file(*name, options).unwrap();
+    zip.write_all(content).unwrap();
+  }
+  zip.finish().unwrap();
+}
+
+/// The color of a preview's image, to check which cover was picked.
+fn cover_color(preview: &Preview) -> [u8; 3] {
+  let Preview::Image(img) = preview else {
+    panic!("expected a cover, got {preview:?}");
+  };
+  img.image.to_rgb8().get_pixel(0, 0).0
+}
+
+const CONTAINER: &str = r#"<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"#;
+
+#[test]
+fn epub3_covers_and_details_are_read_from_the_package() {
+  let tmp = tempfile::tempdir().unwrap();
+  let file = tmp.path().join("book.epub");
+  let opf = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Tom &amp; Jerry&#x2019;s Tale</dc:title>
+    <dc:creator id="a1">Jane Doe</dc:creator>
+    <dc:creator id="a2">John Roe</dc:creator>
+    <dc:publisher>Small Press</dc:publisher>
+    <dc:date>2020-03-04T00:00:00Z</dc:date>
+  </metadata>
+  <manifest>
+    <item id="decoy" href="images/cover-small.png" media-type="image/png"/>
+    <item id="img" href="images/front%20art.png" media-type="image/png" properties="cover-image"/>
+  </manifest>
+</package>"#;
+  zip_file(
+    &file,
+    &[
+      ("mimetype", b"application/epub+zip"),
+      ("META-INF/container.xml", CONTAINER.as_bytes()),
+      ("OEBPS/content.opf", opf.as_bytes()),
+      ("OEBPS/images/cover-small.png", &png(RED)),
+      ("OEBPS/images/front art.png", &png(GREEN)),
+    ],
+  );
+  let registry = PreviewRegistry::configured(&HighlightConfig::default(), true);
+  let preview = preview_of(&registry, &file);
+  assert_eq!(
+    cover_color(&preview),
+    GREEN,
+    "the cover-image property wins"
+  );
+  let info = info_of(&preview);
+  assert_eq!(row(&info, "Title"), Some("Tom & Jerry\u{2019}s Tale"));
+  assert_eq!(row(&info, "Author"), Some("Jane Doe, John Roe"));
+  assert_eq!(row(&info, "Publisher"), Some("Small Press"));
+  assert_eq!(row(&info, "Published"), Some("2020-03-04"));
+}
+
+#[test]
+fn epub2_covers_are_found_through_the_cover_meta() {
+  let tmp = tempfile::tempdir().unwrap();
+  let file = tmp.path().join("old.epub");
+  let opf = r#"<package version="2.0"><metadata>
+    <dc:title>Old Book</dc:title><meta name="cover" content="front"/></metadata>
+    <manifest>
+      <item id="front" href="../art/front.png" media-type="image/png"/>
+      <item id="text" href="text.xhtml" media-type="application/xhtml+xml"/>
+    </manifest></package>"#;
+  zip_file(
+    &file,
+    &[
+      ("META-INF/container.xml", CONTAINER.as_bytes()),
+      ("OEBPS/content.opf", opf.as_bytes()),
+      ("art/front.png", &png(BLUE)),
+    ],
+  );
+  let registry = PreviewRegistry::configured(&HighlightConfig::default(), true);
+  let preview = preview_of(&registry, &file);
+  assert_eq!(cover_color(&preview), BLUE);
+  assert_eq!(row(&info_of(&preview), "Title"), Some("Old Book"));
+
+  // Without graphics: the details in a metadata block.
+  let registry = PreviewRegistry::configured(&HighlightConfig::default(), false);
+  let Preview::Metadata(rows) = preview_of(&registry, &file) else {
+    panic!("expected metadata");
+  };
+  assert_eq!(row(&rows, "Type"), Some("EPUB ebook"));
+  assert_eq!(row(&rows, "Title"), Some("Old Book"));
+}
+
+#[test]
+fn cbz_covers_are_the_first_page_in_natural_order() {
+  let tmp = tempfile::tempdir().unwrap();
+  let file = tmp.path().join("comic.cbz");
+  zip_file(
+    &file,
+    &[
+      ("__MACOSX/._1.png", b"junk"),
+      ("pages/10.png", &png(RED)),
+      ("pages/2.png", &png(RED)),
+      ("pages/1.png", &png(GREEN)),
+      ("ComicInfo.xml", b"<ComicInfo/>"),
+    ],
+  );
+  let registry = PreviewRegistry::configured(&HighlightConfig::default(), true);
+  let preview = preview_of(&registry, &file);
+  assert_eq!(cover_color(&preview), GREEN);
+  assert_eq!(row(&info_of(&preview), "Pages"), Some("3"));
+}
+
+/// A MOBI file: PalmDB header and record table, record 0 with the PalmDOC and MOBI headers,
+/// EXTH metadata and the full name, a text record, and two image records. The EXTH cover
+/// offset (1) picks the second image.
+fn mobi_file(path: &Path) {
+  let mut exth_records = Vec::new();
+  let mut exth = |kind: u32, data: &[u8]| {
+    exth_records.extend_from_slice(&kind.to_be_bytes());
+    exth_records.extend_from_slice(&(data.len() as u32 + 8).to_be_bytes());
+    exth_records.extend_from_slice(data);
+  };
+  exth(100, b"Jane Doe");
+  exth(100, b"John Roe");
+  exth(101, b"Kindle Press");
+  exth(106, b"2019-01-02T00:00:00+00:00");
+  exth(503, b"Updated Title");
+  exth(201, &1u32.to_be_bytes());
+  let mut exth_block = b"EXTH".to_vec();
+  exth_block.extend_from_slice(&(exth_records.len() as u32 + 12).to_be_bytes());
+  exth_block.extend_from_slice(&6u32.to_be_bytes());
+  exth_block.extend_from_slice(&exth_records);
+
+  let mobi_len: usize = 232;
+  let name = b"Original Name";
+  let name_at = 16 + mobi_len + exth_block.len();
+  let mut rec0 = vec![0u8; 16 + mobi_len];
+  rec0[16..20].copy_from_slice(b"MOBI");
+  rec0[20..24].copy_from_slice(&(mobi_len as u32).to_be_bytes());
+  rec0[84..88].copy_from_slice(&(name_at as u32).to_be_bytes());
+  rec0[88..92].copy_from_slice(&(name.len() as u32).to_be_bytes());
+  rec0[108..112].copy_from_slice(&2u32.to_be_bytes()); // first image record
+  rec0[128..132].copy_from_slice(&0x40u32.to_be_bytes()); // EXTH present
+  rec0.extend_from_slice(&exth_block);
+  rec0.extend_from_slice(name);
+
+  let records = [rec0, b"text".to_vec(), png(RED), png(GREEN)];
+  let mut pdb = vec![0u8; 78];
+  pdb[..8].copy_from_slice(b"testbook");
+  pdb[60..68].copy_from_slice(b"BOOKMOBI");
+  pdb[76..78].copy_from_slice(&(records.len() as u16).to_be_bytes());
+  let mut offset = 78 + records.len() * 8 + 2;
+  for (i, r) in records.iter().enumerate() {
+    pdb.extend_from_slice(&(offset as u32).to_be_bytes());
+    pdb.extend_from_slice(&(i as u32).to_be_bytes());
+    offset += r.len();
+  }
+  pdb.extend_from_slice(&[0, 0]);
+  for r in &records {
+    pdb.extend_from_slice(r);
+  }
+  fs::write(path, pdb).unwrap();
+}
+
+#[test]
+fn mobi_covers_and_details_come_from_the_exth_records() {
+  let tmp = tempfile::tempdir().unwrap();
+  for name in ["book.mobi", "book.azw3"] {
+    let file = tmp.path().join(name);
+    mobi_file(&file);
+    let registry = PreviewRegistry::configured(&HighlightConfig::default(), true);
+    let preview = preview_of(&registry, &file);
+    assert_eq!(
+      cover_color(&preview),
+      GREEN,
+      "{name}: the EXTH cover offset"
+    );
+    let info = info_of(&preview);
+    assert_eq!(row(&info, "Title"), Some("Updated Title"));
+    assert_eq!(row(&info, "Author"), Some("Jane Doe, John Roe"));
+    assert_eq!(row(&info, "Publisher"), Some("Kindle Press"));
+    assert_eq!(row(&info, "Published"), Some("2019-01-02"));
+  }
+}
+
+#[test]
+fn damaged_ebooks_fall_back_without_panicking() {
+  let tmp = tempfile::tempdir().unwrap();
+  let registry = PreviewRegistry::configured(&HighlightConfig::default(), true);
+  for (name, content) in [
+    ("empty.epub", &b""[..]),
+    ("junk.epub", b"PK\x03\x04 not a zip"),
+    ("short.mobi", b"BOOKMOBI"),
+    ("junk.azw3", &[0xffu8; 200][..]),
+    ("empty.cbz", b""),
+  ] {
+    let file = tmp.path().join(name);
+    fs::write(&file, content).unwrap();
+    let preview = preview_of(&registry, &file);
+    assert!(!matches!(preview, Preview::Image(_)), "{name}: {preview:?}");
+  }
+  // A MOBI whose header says the cover is in a record that does not exist.
+  let file = tmp.path().join("truncated.mobi");
+  mobi_file(&file);
+  let mut data = fs::read(&file).unwrap();
+  data[77] = 3; // claims 3 records; the cover offset points at the 4th
+  fs::write(&file, data).unwrap();
+  let preview = preview_of(&registry, &file);
+  assert!(!matches!(preview, Preview::Image(_)));
+}
+
+#[test]
+fn the_metadata_view_names_what_a_rendering_shows() {
+  let tmp = tempfile::tempdir().unwrap();
+  let file = tmp.path().join("book.azw3");
+  mobi_file(&file);
+  let registry = PreviewRegistry::configured(&HighlightConfig::default(), true);
+  let content = preview_of(&registry, &file);
+  assert!(matches!(content, Preview::Image(_)));
+  let status = tansu::app::PreviewStatus::Ready(std::sync::Arc::new(content));
+  let rows = tansu::ui::columns::metadata_rows(&entry(&file), &status);
+  assert_eq!(row(&rows, "Type"), Some("Kindle ebook"));
+  assert_eq!(
+    row(&rows, "Dimensions"),
+    None,
+    "the cover's size says nothing about the book"
+  );
+  assert_eq!(row(&rows, "Title"), Some("Updated Title"));
+}

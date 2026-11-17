@@ -249,14 +249,14 @@ pub enum Rendered {
 pub fn cached_preview(
   entry: &Entry,
   kind: &str,
-  label: &str,
+  label: &'static str,
   ctx: &PreviewContext,
   render: impl FnOnce(&Path) -> Result<Rendered, PreviewError>,
 ) -> Result<Option<Preview>, PreviewError> {
   let cache = ctx.thumbnails;
   let key = ThumbnailCache::key(entry, kind);
   if let Some((image, info)) = cache.and_then(|c| c.get(&key)) {
-    return Ok(Some(image_preview(image, info)));
+    return Ok(Some(image_preview(image, info, label)));
   }
   if let Some(cache) = cache {
     // Thumbnails show the user's files: private, as the freedesktop.org thumbnail
@@ -276,7 +276,7 @@ pub fn cached_preview(
         if let Some(cache) = cache {
           cache.put(&key, &image, &info);
         }
-        Ok(Some(image_preview(image, info)))
+        Ok(Some(image_preview(image, info, label)))
       }
       None => Ok(info_only(entry, label, info)),
     },
@@ -289,13 +289,14 @@ pub fn cached_preview(
   result
 }
 
-fn image_preview(image: DynamicImage, info: Vec<(String, String)>) -> Preview {
+fn image_preview(image: DynamicImage, info: Vec<(String, String)>, label: &'static str) -> Preview {
   let (width, height) = (image.width(), image.height());
   Preview::Image(PreviewImage {
     image: Arc::new(image),
     width,
     height,
     info,
+    label: Some(label),
   })
 }
 

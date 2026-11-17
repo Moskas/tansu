@@ -198,7 +198,7 @@ pub fn metadata_rows(entry: &Entry, status: &PreviewStatus) -> Vec<(String, Stri
       Some("text file")
     }
     Some(Preview::Image(_)) if photo => Some("image"),
-    Some(Preview::Image(_)) => class_label(entry.class()),
+    Some(Preview::Image(image)) => image.label.or(class_label(entry.class())),
     _ => None,
   };
   let mut rows = metadata_lines(entry, label);
