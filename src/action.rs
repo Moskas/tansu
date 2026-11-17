@@ -41,6 +41,8 @@ pub enum Action {
   Search,
   SearchNext,
   SearchPrev,
+  ClearSearch,
+  MarkMatches,
   Reload,
   ToggleHelp,
   CommandLine,
@@ -48,7 +50,7 @@ pub enum Action {
 }
 
 impl Action {
-  pub const ALL: [Action; 41] = [
+  pub const ALL: [Action; 43] = [
     Action::MoveUp,
     Action::MoveDown,
     Action::MoveTop,
@@ -86,6 +88,8 @@ impl Action {
     Action::Search,
     Action::SearchNext,
     Action::SearchPrev,
+    Action::ClearSearch,
+    Action::MarkMatches,
     Action::Reload,
     Action::ToggleHelp,
     Action::CommandLine,
@@ -132,6 +136,8 @@ impl Action {
       Action::Search => "search",
       Action::SearchNext => "search_next",
       Action::SearchPrev => "search_prev",
+      Action::ClearSearch => "clear_search",
+      Action::MarkMatches => "mark_matches",
       Action::Reload => "reload",
       Action::ToggleHelp => "toggle_help",
       Action::CommandLine => "command_line",
@@ -178,6 +184,8 @@ impl Action {
       Action::Search => "Search entries (fuzzy, or * and ? wildcards)",
       Action::SearchNext => "Jump to the next search match",
       Action::SearchPrev => "Jump to the previous search match",
+      Action::ClearSearch => "Stop dimming entries that do not match the search",
+      Action::MarkMatches => "Mark every entry matching the search",
       Action::Reload => "Reload directory",
       Action::ToggleHelp => "Toggle this help",
       Action::CommandLine => "Open the command line",

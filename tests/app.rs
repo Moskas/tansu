@@ -1949,3 +1949,64 @@ fn search_skips_hidden_entries_and_persists_across_directories() {
   app.run_command_line("search secret");
   assert!(app.message.as_ref().unwrap().text.contains("no match"));
 }
+
+/// Whether the name in the current column's `row` is drawn dim.
+fn row_dimmed(app: &App, row: u16) -> bool {
+  let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
+  terminal.draw(|f| tansu::ui::render(f, app)).unwrap();
+  terminal.backend().buffer()[(CURRENT_X, FIRST_ROW + row)]
+    .modifier
+    .contains(Modifier::DIM)
+}
+
+#[test]
+fn search_dims_non_matches_until_escape_and_n_brings_it_back() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  assert!(!row_dimmed(&app, 1), "no search, nothing dim");
+  app.run_command_line("search *.txt");
+  pump(&mut app);
+  assert_eq!(selected(&app), "file2.txt");
+  assert!(row_dimmed(&app, 0), "alpha does not match");
+  assert!(!row_dimmed(&app, 4), "file10.txt matches");
+  press(&mut app, "<Esc>");
+  assert!(!row_dimmed(&app, 0));
+  press(&mut app, "n");
+  assert!(row_dimmed(&app, 0));
+  // The cursor row is never dimmed, matching or not.
+  press(&mut app, "gg");
+  assert!(!row_dimmed(&app, 0));
+}
+
+#[test]
+fn ms_marks_every_match() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "ms");
+  assert!(
+    app
+      .message
+      .as_ref()
+      .unwrap()
+      .text
+      .contains("no previous search")
+  );
+  press(&mut app, "<Space>"); // alpha stays marked
+  app.run_command_line("search *.txt");
+  pump(&mut app);
+  press(&mut app, "ms");
+  assert!(
+    app
+      .message
+      .as_ref()
+      .unwrap()
+      .text
+      .contains("marked 2 items")
+  );
+  let marked: Vec<String> = app
+    .marked_entries()
+    .iter()
+    .map(|e| e.name.clone())
+    .collect();
+  assert_eq!(marked, vec!["alpha", "file2.txt", "file10.txt"]);
+}

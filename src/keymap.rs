@@ -275,6 +275,8 @@ pub const DEFAULT_BINDINGS: &[(&str, Action)] = &[
   ("/", Action::Search),
   ("n", Action::SearchNext),
   ("N", Action::SearchPrev),
+  ("<Esc>", Action::ClearSearch),
+  ("ms", Action::MarkMatches),
   ("R", Action::Reload),
   ("?", Action::ToggleHelp),
   (":", Action::CommandLine),

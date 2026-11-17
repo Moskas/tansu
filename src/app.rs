@@ -246,6 +246,9 @@ pub struct App {
   vcs_force: HashSet<PathBuf>,
   /// The last search as typed, and parsed. Kept across directory changes, like vim's.
   search: Option<(String, Pattern)>,
+  /// Entries that do not match the search are drawn dim. `<Esc>` turns this off and the next
+  /// search or `n`/`N` back on, like vim's `hlsearch`.
+  search_highlight: bool,
   /// Directory left by the last directory change, for `:cd -`.
   previous_dir: Option<PathBuf>,
   /// Entry to select once the given directory is listed again (after a rename).
@@ -302,6 +305,7 @@ impl App {
       repos: HashMap::new(),
       vcs_force: HashSet::new(),
       search: None,
+      search_highlight: false,
       previous_dir: None,
       select_after_load: None,
       last_click: None,
@@ -805,6 +809,7 @@ impl App {
       return;
     };
     let text = text.clone();
+    self.search_highlight = true;
     let matches = self.search_matches();
     if matches.is_empty() {
       self.set_error(format!("no match for `{text}`"));
@@ -820,6 +825,34 @@ impl App {
     };
     self.set_cursor(matches[k]);
     self.set_info(format!("match {}/{n} for `{text}`", k + 1));
+  }
+
+  /// Whether `entry` is drawn dim for not matching the search being highlighted.
+  pub fn dimmed_by_search(&self, entry: &Entry) -> bool {
+    match &self.search {
+      Some((_, pattern)) if self.search_highlight => pattern.score(&entry.name).is_none(),
+      _ => false,
+    }
+  }
+
+  /// `ms`: marks every visible entry matching the last search, keeping existing marks.
+  fn mark_matches(&mut self) {
+    let Some((text, _)) = &self.search else {
+      self.set_error("no previous search");
+      return;
+    };
+    let text = text.clone();
+    let paths: Vec<PathBuf> = self
+      .search_matches()
+      .into_iter()
+      .filter_map(|i| self.visible_entry(i).map(|e| e.path.clone()))
+      .collect();
+    if paths.is_empty() {
+      self.set_error(format!("no match for `{text}`"));
+      return;
+    }
+    self.set_info(format!("marked {} matching `{text}`", items(paths.len())));
+    self.marked.extend(paths);
   }
 
   /// `:cd`: no argument goes home, `-` to the previous directory, anything else is a path.
@@ -1314,6 +1347,8 @@ impl App {
       }
       Action::SearchNext => self.jump_to_match(Some(true)),
       Action::SearchPrev => self.jump_to_match(Some(false)),
+      Action::ClearSearch => self.search_highlight = false,
+      Action::MarkMatches => self.mark_matches(),
       Action::Reload => self.reload(),
       Action::ToggleMetadata => {
         self.show_metadata = !self.show_metadata;

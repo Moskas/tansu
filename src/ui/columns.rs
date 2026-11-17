@@ -81,15 +81,13 @@ fn render_current(buf: &mut Buffer, area: Rect, app: &App) {
     };
     let info = entry_info(entry, app);
     let marks = app.vcs_marks(&app.cwd, entry);
-    draw_row(
-      buf,
-      Rect::new(area.x, area.y + row, area.width, 1),
-      entry,
-      i == cursor.index,
-      info.as_deref(),
-      &marks,
-      app,
-    );
+    let rect = Rect::new(area.x, area.y + row, area.width, 1);
+    let highlighted = i == cursor.index;
+    draw_row(buf, rect, entry, highlighted, info.as_deref(), &marks, app);
+    // Entries that miss the search fade out; the cursor row stays readable.
+    if !highlighted && app.dimmed_by_search(entry) {
+      buf.set_style(rect, Style::new().add_modifier(Modifier::DIM));
+    }
   }
 }
 
