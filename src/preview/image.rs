@@ -19,6 +19,9 @@ pub struct PreviewImage {
   /// What the image shows when it is a rendering of another kind of file (`video`, `PDF
   /// document`); `None` for image files.
   pub label: Option<&'static str>,
+  /// The details matter more than the image (an audio file's cover): they stay below it
+  /// in shorter columns too.
+  pub details_first: bool,
 }
 
 impl std::fmt::Debug for PreviewImage {
@@ -86,6 +89,7 @@ impl Previewer for ImagePreviewer {
       height,
       info: exif.map(super::exif::summary).unwrap_or_default(),
       label: None,
+      details_first: false,
     })))
   }
 }

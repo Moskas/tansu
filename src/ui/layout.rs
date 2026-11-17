@@ -14,14 +14,23 @@ pub fn body_inner(width: u16, rows: u16) -> Rect {
   Rect::new(1, 2, width.saturating_sub(2), rows)
 }
 
+/// Rows an image keeps at least when its details come first.
+pub const MIN_IMAGE_ROWS: u16 = 4;
+
 /// Splits a preview column `height` rows tall between an image and `info` rows of details
-/// below it, after a separating rule. The details are only shown while the image keeps two
-/// thirds of the column; in a shorter column they are left to the metadata view. Returns the
-/// rows for the image and the number of detail rows shown. The image is encoded and drawn
-/// with the same split.
-pub fn image_split(height: u16, info: usize) -> (u16, u16) {
+/// below it, after a separating rule. Normally the details are only shown while the image
+/// keeps two thirds of the column; with `details_first` (audio, where the cover is a small
+/// extra) while it keeps [`MIN_IMAGE_ROWS`]. In a shorter column the details are left to
+/// the metadata view. Returns the rows for the image and the number of detail rows shown.
+/// The image is encoded and drawn with the same split.
+pub fn image_split(height: u16, info: usize, details_first: bool) -> (u16, u16) {
   let below = info.saturating_add(1).min(u16::MAX as usize) as u16;
-  if info == 0 || below.saturating_mul(3) > height {
+  let fits = if details_first {
+    below.saturating_add(MIN_IMAGE_ROWS) <= height
+  } else {
+    below.saturating_mul(3) <= height
+  };
+  if info == 0 || !fits {
     (height, 0)
   } else {
     (height - below, below - 1)

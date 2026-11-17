@@ -297,6 +297,7 @@ fn image_preview(image: DynamicImage, info: Vec<(String, String)>, label: &'stat
     height,
     info,
     label: Some(label),
+    details_first: false,
   })
 }
 

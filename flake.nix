@@ -28,7 +28,7 @@
         # preview it provides falls back to plain metadata.
         previewTools = with pkgs; [
           bat # syntax highlighting
-          ffmpeg-headless # ffprobe (video details) and ffmpeg (frames)
+          ffmpeg-headless # ffprobe (video and audio details) and ffmpeg (frames, covers)
           ffmpegthumbnailer # video frames
           poppler-utils # pdftoppm (PDF pages) and pdfinfo (PDF details)
         ];

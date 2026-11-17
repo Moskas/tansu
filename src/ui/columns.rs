@@ -147,7 +147,7 @@ fn render_preview(buf: &mut Buffer, area: Rect, app: &App) {
     }
     Preview::Image(image) => match &slot.image {
       Some(encoded) => {
-        let (rows, info) = layout::image_split(area.height, image.info.len());
+        let (rows, info) = layout::image_split(area.height, image.info.len(), image.details_first);
         encoded.render(
           Rect {
             height: rows,

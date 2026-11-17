@@ -96,19 +96,25 @@ fn frame(
 pub struct Probe {
   pub duration: Option<f64>,
   pub bit_rate: Option<u64>,
-  /// Streams in file order, each a map of the fields asked for.
+  /// Streams in file order, each a map of the fields asked for (`codec_name`, ...,
+  /// `tags.title`, `disposition.attached_pic`).
   pub streams: Vec<BTreeMap<String, String>>,
+  /// Metadata tags with lowercase names: the container's, completed by the streams' (Ogg
+  /// and Opus keep them on the audio stream).
+  pub tags: BTreeMap<String, String>,
 }
 
-fn probe(video: &Path, ctx: &PreviewContext) -> Result<Option<Probe>, PreviewError> {
+/// What `ffprobe` reports about a video or audio file, or `None` without ffprobe.
+pub(super) fn probe(video: &Path, ctx: &PreviewContext) -> Result<Option<Probe>, PreviewError> {
   let args: [&OsStr; 7] = [
     "-v".as_ref(),
     "error".as_ref(),
     "-of".as_ref(),
     "flat".as_ref(),
     "-show_entries".as_ref(),
-    "format=duration,bit_rate:stream=codec_type,codec_name,width,height,avg_frame_rate,\
-     channels,sample_rate"
+    "format=duration,bit_rate:format_tags:stream=codec_type,codec_name,width,height,\
+     avg_frame_rate,channels,sample_rate,bits_per_raw_sample:stream_tags:\
+     stream_disposition=attached_pic"
       .as_ref(),
     video.as_os_str(),
   ];
@@ -134,7 +140,11 @@ impl Probe {
         match field {
           "duration" => probe.duration = value.parse().ok(),
           "bit_rate" => probe.bit_rate = value.parse().ok(),
-          _ => {}
+          f => {
+            if let Some(tag) = f.strip_prefix("tags.") {
+              probe.tags.insert(tag.to_lowercase(), value);
+            }
+          }
         }
       } else if let Some(rest) = key.strip_prefix("streams.stream.")
         && let Some((index, field)) = rest.split_once('.')
@@ -147,14 +157,49 @@ impl Probe {
       }
     }
     probe.streams = streams.into_values().collect();
+    for stream in &probe.streams {
+      for (field, value) in stream {
+        if let Some(tag) = field.strip_prefix("tags.") {
+          probe
+            .tags
+            .entry(tag.to_lowercase())
+            .or_insert_with(|| value.clone());
+        }
+      }
+    }
     probe
   }
 
-  fn stream(&self, kind: &str) -> Option<&BTreeMap<String, String>> {
+  pub(super) fn stream(&self, kind: &str) -> Option<&BTreeMap<String, String>> {
     self
       .streams
       .iter()
       .find(|s| s.get("codec_type").map(String::as_str) == Some(kind))
+  }
+
+  /// The first audio stream: `flac, stereo, 44.1 kHz, 16-bit`.
+  pub(super) fn audio_summary(&self) -> Option<String> {
+    let audio = self.stream("audio")?;
+    let mut desc = audio.get("codec_name").cloned().unwrap_or_default();
+    if let Some(ch) = audio.get("channels").and_then(|c| c.parse::<u32>().ok()) {
+      let ch = match ch {
+        1 => "mono".to_string(),
+        2 => "stereo".to_string(),
+        n => format!("{n} channels"),
+      };
+      desc = join(&desc, &ch);
+    }
+    if let Some(rate) = audio.get("sample_rate").and_then(|r| r.parse::<f64>().ok()) {
+      desc = join(&desc, &format!("{} kHz", trim_float(rate / 1000.0)));
+    }
+    if let Some(bits) = audio
+      .get("bits_per_raw_sample")
+      .and_then(|b| b.parse::<u32>().ok())
+      .filter(|b| *b > 0)
+    {
+      desc = join(&desc, &format!("{bits}-bit"));
+    }
+    Some(desc).filter(|d| !d.is_empty())
   }
 
   /// Duration, resolution, video and audio codecs, and bitrate, as detail rows.
@@ -175,22 +220,8 @@ impl Probe {
         rows.push(("Video".to_string(), desc));
       }
     }
-    if let Some(audio) = self.stream("audio") {
-      let mut desc = audio.get("codec_name").cloned().unwrap_or_default();
-      if let Some(ch) = audio.get("channels").and_then(|c| c.parse::<u32>().ok()) {
-        let ch = match ch {
-          1 => "mono".to_string(),
-          2 => "stereo".to_string(),
-          n => format!("{n} channels"),
-        };
-        desc = join(&desc, &ch);
-      }
-      if let Some(rate) = audio.get("sample_rate").and_then(|r| r.parse::<f64>().ok()) {
-        desc = join(&desc, &format!("{} kHz", trim_float(rate / 1000.0)));
-      }
-      if !desc.is_empty() {
-        rows.push(("Audio".to_string(), desc));
-      }
+    if let Some(desc) = self.audio_summary() {
+      rows.push(("Audio".to_string(), desc));
     }
     if let Some(rate) = self.bit_rate.filter(|r| *r > 0) {
       rows.push(("Bitrate".to_string(), bit_rate(rate)));
@@ -199,7 +230,7 @@ impl Probe {
   }
 }
 
-fn join(a: &str, b: &str) -> String {
+pub(super) fn join(a: &str, b: &str) -> String {
   if a.is_empty() {
     b.to_string()
   } else {
@@ -208,7 +239,7 @@ fn join(a: &str, b: &str) -> String {
 }
 
 /// `1:02:03` or `2:03`.
-fn duration(seconds: f64) -> String {
+pub(super) fn duration(seconds: f64) -> String {
   let total = seconds.round() as u64;
   let (h, m, s) = (total / 3600, total / 60 % 60, total % 60);
   if h > 0 {
@@ -226,13 +257,13 @@ fn frame_rate(rate: &str) -> Option<String> {
 }
 
 /// A number with at most two decimals and no trailing zeros: `48`, `44.1`, `23.98`.
-fn trim_float(value: f64) -> String {
+pub(super) fn trim_float(value: f64) -> String {
   let text = format!("{value:.2}");
   text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 /// `4.5 Mb/s`, `320 kb/s`.
-fn bit_rate(bits: u64) -> String {
+pub(super) fn bit_rate(bits: u64) -> String {
   if bits >= 1_000_000 {
     format!("{} Mb/s", trim_float(bits as f64 / 1e6))
   } else {

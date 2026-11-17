@@ -1335,9 +1335,13 @@ mod trash {
 #[test]
 fn image_details_need_the_image_to_keep_two_thirds_of_the_column() {
   use tansu::ui::layout::image_split;
-  assert_eq!(image_split(40, 0), (40, 0));
-  assert_eq!(image_split(40, 7), (32, 7));
-  assert_eq!(image_split(24, 7), (16, 7));
-  assert_eq!(image_split(23, 7), (23, 0));
-  assert_eq!(image_split(0, 3), (0, 0));
+  assert_eq!(image_split(40, 0, false), (40, 0));
+  assert_eq!(image_split(40, 7, false), (32, 7));
+  assert_eq!(image_split(24, 7, false), (16, 7));
+  assert_eq!(image_split(23, 7, false), (23, 0));
+  assert_eq!(image_split(0, 3, false), (0, 0));
+  // Details first: shown while the image keeps 4 rows.
+  assert_eq!(image_split(14, 9, true), (4, 9));
+  assert_eq!(image_split(13, 9, true), (13, 0));
+  assert_eq!(image_split(14, 9, false), (14, 0));
 }

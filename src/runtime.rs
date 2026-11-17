@@ -214,7 +214,7 @@ pub fn run_preview(
   let image = match (&mut result, encoder, cells) {
     (Ok(Preview::Image(img)), Some(encoder), Some((width, height))) => {
       // Details below the image take some of the column.
-      let (rows, _) = crate::ui::layout::image_split(height, img.info.len());
+      let (rows, _) = crate::ui::layout::image_split(height, img.info.len(), img.details_first);
       let encoded = encoder.encode(&img.image, (width, rows));
       if token.is_cancelled() {
         return None;

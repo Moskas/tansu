@@ -957,3 +957,176 @@ fn the_metadata_view_names_what_a_rendering_shows() {
   );
   assert_eq!(row(&rows, "Title"), Some("Updated Title"));
 }
+
+/// A 2 s tone tagged like a music file, with a 64x48 cover (FLAC, MP3) or without (Opus).
+fn song(path: &Path, cover: bool) -> bool {
+  if !installed("ffmpeg") || !installed("ffprobe") {
+    eprintln!("skipped: ffmpeg/ffprobe not installed");
+    return false;
+  }
+  let dir = path.parent().unwrap();
+  let art = dir.join("art.png");
+  image::RgbImage::from_pixel(64, 48, image::Rgb(GREEN))
+    .save(&art)
+    .unwrap();
+  let mut cmd = std::process::Command::new("ffmpeg");
+  cmd.args(["-v", "error", "-nostdin", "-f", "lavfi", "-i"]);
+  cmd.arg("sine=duration=2:sample_rate=48000");
+  if cover {
+    cmd.arg("-i").arg(&art);
+    cmd.args([
+      "-map",
+      "0:a",
+      "-map",
+      "1:v",
+      "-disposition:v",
+      "attached_pic",
+    ]);
+  }
+  for tag in [
+    "title=Song",
+    "artist=Band",
+    "album=Record",
+    "date=2021",
+    "genre=Rock",
+    "track=3/12",
+  ] {
+    cmd.args(["-metadata", tag]);
+  }
+  let status = cmd.arg("-y").arg(path).status().unwrap();
+  assert!(status.success(), "ffmpeg failed for {}", path.display());
+  true
+}
+
+#[test]
+fn songs_show_their_tags_and_a_small_cover() {
+  let tmp = tempfile::tempdir().unwrap();
+  for name in ["song.flac", "song.mp3"] {
+    let file = tmp.path().join(name);
+    if !song(&file, true) {
+      return;
+    }
+    let registry = PreviewRegistry::configured(&HighlightConfig::default(), true);
+    let preview = preview_of(&registry, &file);
+    let Preview::Image(img) = &preview else {
+      panic!("{name}: expected the cover, got {preview:?}");
+    };
+    assert!(
+      img.details_first,
+      "{name}: details stay visible in short columns"
+    );
+    assert_eq!(
+      (img.width, img.height),
+      (64, 48),
+      "{name}: small covers stay small"
+    );
+    assert!(cover_color(&preview)[1] > 150, "{name}: the green cover");
+    let info = info_of(&preview);
+    assert_eq!(row(&info, "Title"), Some("Song"), "{name}");
+    assert_eq!(row(&info, "Artist"), Some("Band"), "{name}");
+    assert_eq!(row(&info, "Album"), Some("Record"), "{name}");
+    assert_eq!(row(&info, "Track"), Some("3 of 12"), "{name}");
+    assert_eq!(row(&info, "Date"), Some("2021"), "{name}");
+    assert_eq!(row(&info, "Genre"), Some("Rock"), "{name}");
+    assert_eq!(row(&info, "Duration"), Some("0:02"), "{name}");
+    assert!(
+      row(&info, "Audio").is_some_and(|a| a.contains("mono, 48 kHz")),
+      "{name}"
+    );
+  }
+}
+
+#[test]
+fn songs_without_a_cover_show_their_tags_in_a_metadata_block() {
+  let tmp = tempfile::tempdir().unwrap();
+  let file = tmp.path().join("song.opus");
+  if !song(&file, false) {
+    return;
+  }
+  let registry = PreviewRegistry::configured(&HighlightConfig::default(), true);
+  let Preview::Metadata(rows) = preview_of(&registry, &file) else {
+    panic!("expected metadata");
+  };
+  assert_eq!(row(&rows, "Type"), Some("audio"));
+  // Opus keeps its tags on the stream, not the container.
+  assert_eq!(row(&rows, "Title"), Some("Song"));
+  assert_eq!(row(&rows, "Artist"), Some("Band"));
+  assert!(row(&rows, "Audio").is_some_and(|a| a.starts_with("opus")));
+}
+
+#[test]
+fn large_covers_are_extracted_small() {
+  let tmp = tempfile::tempdir().unwrap();
+  let file = tmp.path().join("big.flac");
+  if !installed("ffmpeg") || !installed("ffprobe") {
+    return;
+  }
+  let art = tmp.path().join("big.png");
+  image::RgbImage::from_pixel(1200, 900, image::Rgb(BLUE))
+    .save(&art)
+    .unwrap();
+  let status = std::process::Command::new("ffmpeg")
+    .args([
+      "-v",
+      "error",
+      "-nostdin",
+      "-f",
+      "lavfi",
+      "-i",
+      "sine=duration=1",
+      "-i",
+    ])
+    .arg(&art)
+    .args([
+      "-map",
+      "0:a",
+      "-map",
+      "1:v",
+      "-disposition:v",
+      "attached_pic",
+      "-y",
+    ])
+    .arg(&file)
+    .status()
+    .unwrap();
+  assert!(status.success());
+  let registry = PreviewRegistry::configured(&HighlightConfig::default(), true);
+  let Preview::Image(img) = preview_of(&registry, &file) else {
+    panic!("expected the cover");
+  };
+  let side = tansu::preview::audio::COVER_SIDE;
+  assert_eq!((img.width, img.height), (side, side * 3 / 4));
+}
+
+#[test]
+fn ffprobe_tags_become_music_details() {
+  let probe = tansu::preview::video::Probe::parse(
+    "streams.stream.0.codec_name=\"flac\"\n\
+     streams.stream.0.codec_type=\"audio\"\n\
+     streams.stream.0.sample_rate=\"44100\"\n\
+     streams.stream.0.channels=2\n\
+     streams.stream.0.bits_per_raw_sample=\"24\"\n\
+     streams.stream.0.tags.ALBUM_ARTIST=\"Stream Artist\"\n\
+     format.duration=\"245.2\"\n\
+     format.bit_rate=\"1411000\"\n\
+     format.tags.TITLE=\"Loud Song\"\n\
+     format.tags.ALBUM=\"Big Record\"\n\
+     format.tags.TRACKNUMBER=\"7\"\n\
+     format.tags.DATE=\"1999-05-01\"\n",
+  );
+  let rows = tansu::preview::audio::rows(&probe);
+  let rows: Vec<(&str, &str)> = rows.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+  assert_eq!(
+    rows,
+    vec![
+      ("Title", "Loud Song"),
+      ("Artist", "Stream Artist"),
+      ("Album", "Big Record"),
+      ("Track", "7"),
+      ("Date", "1999-05-01"),
+      ("Duration", "4:05"),
+      ("Audio", "flac, stereo, 44.1 kHz, 24-bit"),
+      ("Bitrate", "1.41 Mb/s"),
+    ]
+  );
+}

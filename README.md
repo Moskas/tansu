@@ -55,9 +55,9 @@ feature it provides is missing, and previews fall back to plain text or a metada
 |----------------------------|---------------------------------------------|---------------------|
 | `git`                      | Git status markers                          | `git`               |
 | `bat`                      | Syntax highlighting of text previews        | `bat`               |
-| `ffprobe`                  | Video details (duration, size, codecs)      | `ffmpeg`            |
+| `ffprobe`                  | Video and audio details, music tags         | `ffmpeg`            |
 | `ffmpegthumbnailer`        | Video frames                                | `ffmpegthumbnailer` |
-| `ffmpeg`                   | Video frames without ffmpegthumbnailer      | `ffmpeg`            |
+| `ffmpeg`                   | Video frames, embedded audio covers         | `ffmpeg`            |
 | `pdftoppm`, `pdfinfo`      | PDF first pages and details                 | `poppler-utils`     |
 | `zoxide`                   | `:z` and recording visited directories      | `zoxide`            |
 | `wl-copy`, `xclip`, `xsel` | The `y` clipboard keys (OSC 52 without)     | same names [^clip]  |
@@ -92,6 +92,11 @@ text, an image, or a metadata block for everything else.
   page size and creation date from `pdfinfo` below it. Without poppler (or without
   graphics) the details are shown in a metadata block; a file poppler cannot read falls back
   to the text or metadata preview.
+- Music and other audio files list their tags (title, artist, album, track, date, genre)
+  and stream details (duration, codec, channels, sample rate, bit depth, bitrate) from
+  `ffprobe`. An embedded cover is shown above them as a small picture (at most 400 pixels a
+  side, extracted by `ffmpeg`); the details stay below it down to a 4-row cover, and files
+  without a cover show them in a metadata block.
 - Ebooks and comics show their cover with the title, author, publisher and publication
   date (or the page count, for comics), read by tansu itself: EPUB covers from the package
   file's cover entry, MOBI/AZW3 covers from the Kindle metadata, and the first page image
