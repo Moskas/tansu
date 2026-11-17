@@ -1305,3 +1305,50 @@ fn yank_keys_put_paths_and_names_on_the_clipboard() {
   );
   assert_eq!(message(&app), "yanked file file10.txt");
 }
+
+#[test]
+fn command_line_shell_queues_command_in_current_directory() {
+  use tansu::shell::ShellMode;
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjjj"); // file10.txt
+  press(&mut app, ":shell -w wc -l %f");
+  press_keys_without_pump(&mut app, "<Enter>");
+  assert_eq!(
+    app.take_commands(),
+    vec![Command::Shell {
+      script: "wc -l 'file10.txt'".into(),
+      cwd: work.clone(),
+      mode: ShellMode::Foreground { wait_enter: true },
+      program: "wc".into(),
+    }]
+  );
+
+  // `!` and `s` open the command line as `shell `, as does a bare `:shell`.
+  for keys in ["!", "s", ":shell<Enter>"] {
+    press(&mut app, keys);
+    assert_eq!(app.console.as_ref().unwrap().input(), "shell ", "{keys}");
+    press(&mut app, "<Esc>");
+  }
+
+  // In an empty directory `%f` has nothing to expand to, but other commands still run.
+  press(&mut app, "gg");
+  press(&mut app, "jl"); // beta/
+  assert_eq!(app.cwd, work.join("beta"));
+  press(&mut app, ":shell cat %f<Enter>");
+  assert_eq!(
+    app.message.as_ref().unwrap().text,
+    "shell: %f: nothing selected"
+  );
+  press(&mut app, ":shell -s touch new");
+  press_keys_without_pump(&mut app, "<Enter>");
+  assert_eq!(
+    app.take_commands(),
+    vec![Command::Shell {
+      script: "touch new".into(),
+      cwd: work.join("beta"),
+      mode: ShellMode::Silent,
+      program: "touch".into(),
+    }]
+  );
+}

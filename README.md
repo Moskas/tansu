@@ -111,6 +111,7 @@ cargo test
 | `yn`                        | Yank the selection's name     |
 | `y.`                        | Yank name without extension   |
 | `yf`                        | Yank the selection as a file  |
+| `!`, `s`                    | Run a shell command           |
 | `R`                         | Reload directory              |
 | `?`                         | Toggle help overlay           |
 | `:`                         | Open the command line         |
@@ -172,6 +173,8 @@ or `<C-c>` cancels, and `<BS>` on an empty line closes it. Editing keys: `<Left>
 | `open_with -d <program> [args...]` | Run the program on the selection, detached           |
 | `rename <new name>`                | Rename the selection within its directory            |
 | `rename`                           | Open the command line as `rename <selected name>`    |
+| `shell [-flags] <command>`         | Run a command line through the shell                 |
+| `shell`                            | Open the command line as `shell `                    |
 | `sort <type>`                      | Sort by `name`, `size`, `mtime` or `ctime`           |
 | `<action>`                         | Any action name below, e.g. `open`, `reload`, `quit` |
 | `q`                                | Quit                                                 |
@@ -187,6 +190,39 @@ instead of entering it.
 to replace an existing entry, and the renamed entry stays selected. `r` opens the command line
 as `rename <selected name>`.
 
+`shell` works like ranger's. The rest of the line is run with `$SHELL -c` (`/bin/sh` when
+`$SHELL` is fish or unset) in the current directory, so pipes, quoting and globs work as in a
+shell. These macros are expanded first, each value shell-quoted:
+
+| Macro      | Expands to                                                          |
+|------------|---------------------------------------------------------------------|
+| `%f`       | Name of the selected entry                                          |
+| `%s`       | Names of the selected entries (currently the selected one)          |
+| `%p`       | Full paths of the selected entries                                  |
+| `%d`       | The current directory                                               |
+| `%D`, `%F` | Next tab's directory and file path; tansu has one tab, so this one  |
+| `%%`       | A literal `%`                                                       |
+
+Other `%` sequences are kept as written (`date +%Y`), so write `%%d` for a literal `%d`. `%S`
+and `%P` work like `%p`. `%t` and `%c` (tagged files and the copy buffer in ranger) expand to
+nothing, and `%f` or `%F` without a selection is an error.
+
+A first word starting with `-` holds flags; an uppercase flag cancels its lowercase one:
+
+| Flag | Effect                                                                        |
+|------|-------------------------------------------------------------------------------|
+| none | Run on the terminal while tansu waits, then reload the directory              |
+| `-w` | Same, then wait for `<Enter>` so the output can be read                       |
+| `-p` | Show stdout and stderr in `less`                                              |
+| `-s` | Run in the background with output discarded; a non-zero exit is reported      |
+| `-f` | Run detached with output discarded; the directory is reloaded when it exits   |
+| `-t` | Run in a new terminal window (`$TERMCMD`, else `$TERM` or `xterm`)            |
+| `-r` | Run through `sudo` on the terminal (`sudo -b` with `-f`)                      |
+
+Examples: `:shell -w make`, `:shell -p git log -- %f`, `:shell -f chmod +x %s`,
+`:shell $SHELL` (a subshell in the current directory). `!` and `s` open the command line as
+`shell `.
+
 `cd` takes the rest of the line as the path. It accepts absolute and relative paths and `~`;
 `..` is resolved on the typed path, so symlinked directories are kept as typed. A path to a
 file opens its directory with the file selected.
@@ -201,9 +237,11 @@ to only read it.
 `<Tab>` completes the word being typed: command names first, then their arguments. `rename`
 completes to the selected name, `sort` to the sort types, `cd` to directories at the typed
 path (hidden ones once a `.` is typed), and `open_with [-d]` to the programs on `PATH`
-(scanned the first time they are completed). When several candidates match, pressing
-`<Tab>` again cycles through them and `<S-Tab>` cycles backward. Commands that take an argument
-complete with a trailing space, so the next `<Tab>` goes on to the argument.
+(scanned the first time they are completed). `shell [-flags]` completes the program, then the
+selected name after a space, and names in the current directory for a partial word. When
+several candidates match, pressing `<Tab>` again cycles through them and `<S-Tab>` cycles
+backward. Commands that take an argument complete with a trailing space, so the next `<Tab>`
+goes on to the argument.
 
 ## Configuration
 
@@ -311,8 +349,8 @@ vcs_commit = "#fabd2f"
 
 Action names: `move_up`, `move_down`, `move_top`, `move_bottom`, `half_page_up`,
 `half_page_down`, `page_up`, `page_down`, `go_parent`, `open`, `go_home`, `toggle_hidden`,
-`toggle_metadata`, `rename`, `sort name`, `sort size`, `sort mtime`, `sort ctime`, `copy`,
-`cut`, `paste`, `paste_overwrite`, `clear_buffer`, `yank_path`, `yank_dir`, `yank_name`,
+`toggle_metadata`, `rename`, `shell`, `sort name`, `sort size`, `sort mtime`, `sort ctime`,
+`copy`, `cut`, `paste`, `paste_overwrite`, `clear_buffer`, `yank_path`, `yank_dir`, `yank_name`,
 `yank_name_without_ext`, `yank_file`, `reload`, `toggle_help`, `command_line`, `quit`.
 
 ## Architecture

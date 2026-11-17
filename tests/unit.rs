@@ -791,6 +791,11 @@ fn complete_with(line: &str, selected: Option<&str>) -> Vec<String> {
   use tansu::console::{CompletionSource, completions};
   let programs = vec!["mpv".to_string(), "nvim".to_string(), "nvim-qt".to_string()];
   let list = || programs.as_slice();
+  let files = || {
+    ["a b.txt", "notes.md", "nvim.log"]
+      .map(str::to_string)
+      .to_vec()
+  };
   let subdirs = |typed: &str| -> Vec<String> {
     match typed {
       "" => vec![".git", "docs", "src"],
@@ -808,6 +813,7 @@ fn complete_with(line: &str, selected: Option<&str>) -> Vec<String> {
       selected,
       programs: &list,
       subdirs: &subdirs,
+      files: &files,
     },
   )
 }
@@ -984,4 +990,154 @@ fn osc52_wraps_base64_text() {
     osc52(&Content::Text("/tmp/a".into())),
     "\x1b]52;c;L3RtcC9h\x07"
   );
+}
+
+// ---- :shell ----
+
+#[test]
+fn parses_shell_command() {
+  let shell = |flags: &str, command: &str| {
+    Some(Ok(ConsoleCommand::Shell {
+      flags: flags.into(),
+      command: command.into(),
+    }))
+  };
+  // The command is kept as typed, for the shell to split.
+  assert_eq!(
+    parse("shell echo 'a  b' | wc -c"),
+    shell("", "echo 'a  b' | wc -c")
+  );
+  assert_eq!(parse("shell -pw  du -sh %s"), shell("pw", "du -sh %s"));
+  assert_eq!(parse("shell - ls"), shell("", "ls"));
+  assert_eq!(
+    parse("shell"),
+    Some(Ok(ConsoleCommand::Action(Action::Shell)))
+  );
+  assert_eq!(parse("shell -p"), Some(Err(ConsoleError::MissingCommand)));
+}
+
+#[test]
+fn shell_flags_choose_how_the_command_runs() {
+  use tansu::shell::{ShellFlags, ShellMode};
+  let mode = |flags: &str| ShellFlags::parse(flags).mode;
+  assert_eq!(mode(""), ShellMode::Foreground { wait_enter: false });
+  assert_eq!(mode("w"), ShellMode::Foreground { wait_enter: true });
+  assert_eq!(mode("p"), ShellMode::Pager);
+  assert_eq!(mode("pw"), ShellMode::Pager);
+  assert_eq!(mode("s"), ShellMode::Silent);
+  assert_eq!(mode("f"), ShellMode::Detached);
+  assert_eq!(mode("fs"), ShellMode::Detached);
+  assert_eq!(mode("fw"), ShellMode::Detached);
+  assert_eq!(mode("t"), ShellMode::Terminal);
+  // Unknown flags and `c` are ignored; an uppercase flag cancels its lowercase one.
+  assert_eq!(mode("cxq"), ShellMode::Foreground { wait_enter: false });
+  assert_eq!(mode("fF"), ShellMode::Foreground { wait_enter: false });
+  assert_eq!(mode("pP"), ShellMode::Foreground { wait_enter: false });
+  // sudo keeps the terminal for its password prompt.
+  let sudo = ShellFlags::parse("r");
+  assert_eq!(sudo.mode, ShellMode::Foreground { wait_enter: false });
+  assert_eq!(sudo.apply_sudo("ls".into()), "sudo ls");
+  let sudo_bg = ShellFlags::parse("rf");
+  assert_eq!(sudo_bg.mode, ShellMode::Foreground { wait_enter: false });
+  assert_eq!(sudo_bg.apply_sudo("ls".into()), "sudo -b ls");
+  assert_eq!(ShellFlags::parse("").apply_sudo("ls".into()), "ls");
+}
+
+#[test]
+fn shell_macros_expand_to_quoted_paths() {
+  use std::path::Path;
+  use tansu::shell::{MacroContext, MacroError, expand_macros};
+  let file = Path::new("/home/u/it's a file.txt");
+  let ctx = MacroContext {
+    dir: Path::new("/home/u"),
+    selected: Some(file),
+  };
+  let expand = |s: &str| expand_macros(s, &ctx).map(|o| o.into_string().unwrap());
+  assert_eq!(expand("vim %f").unwrap(), r"vim 'it'\''s a file.txt'");
+  assert_eq!(expand("cd %d").unwrap(), "cd '/home/u'");
+  assert_eq!(
+    expand("cp %p %d/backup").unwrap(),
+    r"cp '/home/u/it'\''s a file.txt' '/home/u'/backup"
+  );
+  assert_eq!(expand("du %s").unwrap(), r"du 'it'\''s a file.txt'");
+  assert_eq!(expand("echo %{f}x").unwrap(), r"echo 'it'\''s a file.txt'x");
+  // `%%` is a literal `%`; unknown macros, a lone `%` and unclosed braces stay as written.
+  assert_eq!(expand("date +%%d").unwrap(), "date +%d");
+  assert_eq!(
+    expand("echo %fx %Y 100% %{f").unwrap(),
+    "echo %fx %Y 100% %{f"
+  );
+  assert_eq!(expand("echo %t%c.").unwrap(), "echo .");
+  // The next tab is this one; its file and selection are full paths.
+  assert_eq!(
+    expand("cp %F %D").unwrap(),
+    r"cp '/home/u/it'\''s a file.txt' '/home/u'"
+  );
+  assert_eq!(expand("%S").unwrap(), expand("%P").unwrap());
+  assert_eq!(expand("%S").unwrap(), expand("%p").unwrap());
+
+  let empty = MacroContext {
+    dir: Path::new("/tmp/empty"),
+    selected: None,
+  };
+  assert_eq!(expand_macros("touch new %s", &empty).unwrap(), "touch new ");
+  assert_eq!(
+    expand_macros("cat %f", &empty),
+    Err(MacroError::NothingSelected("f".into()))
+  );
+  assert_eq!(expand_macros("ls %S %P", &empty).unwrap(), "ls  ");
+}
+
+#[test]
+fn shell_escape_backslashes_metacharacters() {
+  use tansu::shell::shell_escape;
+  assert_eq!(shell_escape("plain.txt"), "plain.txt");
+  assert_eq!(shell_escape("a b&(c)$.txt"), r"a\ b\&\(c\)\$.txt");
+  assert_eq!(shell_escape(r"back\slash"), r"back\\slash");
+  assert_eq!(shell_escape("new\nline"), "'new\nline'");
+}
+
+#[test]
+fn completes_shell_commands() {
+  // The first word is a program, followed by a space.
+  assert_eq!(
+    complete_with("shell nv", None),
+    vec!["shell nvim ", "shell nvim-qt "]
+  );
+  assert_eq!(complete_with("shell -p m", None), vec!["shell -p mpv "]);
+  assert!(complete_with("shell -p", None).is_empty());
+  // After a space, the selected name; without a selection, `%s`.
+  assert_eq!(
+    complete_with("shell nvim ", Some("a b.txt")),
+    vec![r"shell nvim a\ b.txt "]
+  );
+  assert_eq!(complete_with("shell nvim ", None), vec!["shell nvim %s "]);
+  // A partial word completes to names in the current directory.
+  assert_eq!(
+    complete_with("shell nvim -O n", None),
+    vec!["shell nvim -O notes.md", "shell nvim -O nvim.log"]
+  );
+  assert_eq!(
+    complete_with("shell cat a", None),
+    vec![r"shell cat a\ b.txt"]
+  );
+  assert_eq!(complete_with("sh", None), vec!["shell "]);
+}
+
+#[test]
+fn shell_commands_run_in_the_given_directory() {
+  use tansu::opener::run_shell_silent;
+  use tansu::shell::{MacroContext, expand_macros};
+  let tmp = tempfile::tempdir().unwrap();
+  let file = tmp.path().join(r#"it's $HOME & "x".txt"#);
+  std::fs::write(&file, "").unwrap();
+  let ctx = MacroContext {
+    dir: tmp.path(),
+    selected: Some(&file),
+  };
+  // `%f` is a bare name, so this only passes when the shell runs in `dir`.
+  let script = expand_macros("test -f %f && test -d %d && test -f %p", &ctx).unwrap();
+  assert!(run_shell_silent(&script, tmp.path()).unwrap().success());
+  let other = tempfile::tempdir().unwrap();
+  assert!(!run_shell_silent(&script, other.path()).unwrap().success());
 }

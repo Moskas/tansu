@@ -1,4 +1,6 @@
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
@@ -13,6 +15,7 @@ use tansu::keymap::Keymap;
 use tansu::opener;
 use tansu::preview::PreviewRegistry;
 use tansu::runtime::Runtime;
+use tansu::shell::ShellMode;
 use tansu::terminal::TerminalGuard;
 use tansu::ui;
 
@@ -90,6 +93,12 @@ fn main() -> Result<()> {
             path,
             foreground: true,
           } => run_foreground(&mut guard, &input, &mut app, &argv, &path)?,
+          Command::Shell {
+            script,
+            cwd,
+            mode: mode @ (ShellMode::Foreground { .. } | ShellMode::Pager),
+            program,
+          } => run_shell(&mut guard, &input, &mut app, &script, &cwd, mode, &program)?,
           cmd => {
             if let Some(err) = runtime.execute(cmd) {
               app.set_error(err);
@@ -151,13 +160,44 @@ fn run_foreground(
   argv: &[String],
   path: &Path,
 ) -> Result<()> {
+  let program = argv.first().map_or("", String::as_str);
+  suspend_for(guard, input, app, program, || {
+    opener::run_foreground(argv, path)
+  })
+}
+
+/// Runs a `:shell` command that needs the terminal (foreground or paged).
+fn run_shell(
+  guard: &mut TerminalGuard,
+  input: &InputHandle,
+  app: &mut App,
+  script: &OsStr,
+  cwd: &Path,
+  mode: ShellMode,
+  program: &str,
+) -> Result<()> {
+  suspend_for(guard, input, app, program, || match mode {
+    ShellMode::Pager => opener::run_shell_paged(script, cwd),
+    ShellMode::Foreground { wait_enter } => opener::run_shell(script, cwd, wait_enter),
+    _ => opener::run_shell(script, cwd, false),
+  })
+}
+
+/// Hands the terminal to `run` with tansu suspended, then restores the UI.
+fn suspend_for(
+  guard: &mut TerminalGuard,
+  input: &InputHandle,
+  app: &mut App,
+  program: &str,
+  run: impl FnOnce() -> Result<ExitStatus, opener::OpenError>,
+) -> Result<()> {
   input.pause();
-  let result = guard.suspended(|| opener::run_foreground(argv, path));
+  let result = guard.suspended(run);
   input.resume();
   let result = result?.map_err(|e| e.to_string());
   // Resizes while the program ran were not seen.
   let size = guard.terminal.size()?;
   app.set_size(size.width, size.height);
-  app.on_foreground_exit(argv.first().map_or("", String::as_str), result);
+  app.on_foreground_exit(program, result);
   Ok(())
 }

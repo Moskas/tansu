@@ -256,6 +256,8 @@ pub const DEFAULT_BINDINGS: &[(&str, Action)] = &[
   ("yn", Action::YankName),
   ("y.", Action::YankNameWithoutExt),
   ("yf", Action::YankFile),
+  ("!", Action::Shell),
+  ("s", Action::Shell),
   ("R", Action::Reload),
   ("?", Action::ToggleHelp),
   (":", Action::CommandLine),

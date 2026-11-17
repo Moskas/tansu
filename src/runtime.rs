@@ -14,6 +14,7 @@ use crate::event::Event;
 use crate::fs::{DirCount, Entry, PasteMode, count_entries, list_dir, ops};
 use crate::graphics::ImageEncoder;
 use crate::preview::{Preview, PreviewContext, PreviewError, PreviewLimits, PreviewRegistry};
+use crate::shell::ShellMode;
 use crate::vcs::{self, DirVcs, GitError, RepoStatus, VcsRequest};
 use crate::worker::{CancelToken, LatestWorker};
 
@@ -399,6 +400,42 @@ impl Runtime {
           return Some(format!("z: could not start zoxide: {e}"));
         }
       }
+      Command::Shell {
+        script,
+        cwd,
+        mode,
+        program,
+      } => {
+        let result = match mode {
+          ShellMode::Silent => {
+            let tx = self.tx.clone();
+            let spawned = thread::Builder::new().name("shell".into()).spawn(move || {
+              let result =
+                crate::opener::run_shell_silent(&script, &cwd).map_err(|e| e.to_string());
+              let _ = tx.send(Event::ProgramExited { program, result });
+            });
+            spawned
+              .map(drop)
+              .map_err(|e| format!("shell: could not start command: {e}"))
+          }
+          // Detached commands report nothing, but the listing is refreshed once they exit.
+          ShellMode::Terminal => {
+            let tx = self.tx.clone();
+            let on_exit = move || drop(tx.send(Event::DetachedExited));
+            crate::opener::spawn_shell_in_terminal(&script, &cwd, on_exit)
+              .map_err(|e| e.to_string())
+          }
+          // Modes that need the terminal are run by the main loop; anything else is detached.
+          _ => {
+            let tx = self.tx.clone();
+            let on_exit = move || drop(tx.send(Event::DetachedExited));
+            crate::opener::spawn_shell_detached(&script, &cwd, on_exit).map_err(|e| e.to_string())
+          }
+        };
+        if let Err(e) = result {
+          return Some(e);
+        }
+      }
       // A rename is a single fast syscall; it runs here so its result arrives in order.
       Command::Rename { from, to } => {
         let _ = self.tx.send(rename(&from, &to));
@@ -442,8 +479,8 @@ impl Runtime {
   }
 }
 
-/// Runs a command to completion on the current thread. `Open`, `Spawn`, `ZoxideAdd` and
-/// `Clipboard` are ignored, so tests never touch the user's programs, zoxide database or
+/// Runs a command to completion on the current thread. `Open`, `Spawn`, `Shell`, `ZoxideAdd`
+/// and `Clipboard` are ignored, so tests never touch the user's programs, zoxide database or
 /// clipboard.
 pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLimits) -> Vec<Event> {
   let token = CancelToken::never();
@@ -470,6 +507,7 @@ pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLim
     } => vec![paste(&sources, &dest, mode, overwrite)],
     Command::Open(_)
     | Command::Spawn { .. }
+    | Command::Shell { .. }
     | Command::ZoxideAdd(_)
     | Command::Clipboard(_)
     | Command::CancelPreview => Vec::new(),

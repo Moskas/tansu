@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::ExitStatus;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -47,6 +48,13 @@ pub enum Event {
   },
   /// Result of writing to the system clipboard.
   Clipboard(Result<(), String>),
+  /// A program run in the background (`:shell -s`) finished.
+  ProgramExited {
+    program: String,
+    result: Result<ExitStatus, String>,
+  },
+  /// A detached program (`:shell -f`, `:shell -t`) exited; it may have changed files.
+  DetachedExited,
   /// VCS status for the entries of `dir`, plus the repositories involved.
   Vcs {
     dir: PathBuf,

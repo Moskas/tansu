@@ -183,6 +183,8 @@ pub enum ConsoleCommand {
   Cd(String),
   /// Jump to the best zoxide match for these keywords, like the shell's `z`.
   Zoxide(Vec<String>),
+  /// Run `command` through the shell. `flags` are the letters after a leading `-`.
+  Shell { flags: String, command: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -191,6 +193,8 @@ pub enum ConsoleError {
   Unknown(String),
   #[error("{0}: missing program")]
   MissingProgram(&'static str),
+  #[error("shell: missing command")]
+  MissingCommand,
   #[error("sort: missing sort type (name, size, mtime, ctime)")]
   MissingSortKey,
   #[error("sort: unknown sort type `{0}`")]
@@ -215,6 +219,10 @@ pub const CD: &str = "cd";
 /// Name of the command that jumps to a directory through zoxide.
 pub const Z: &str = "z";
 
+/// Name of the command that runs a shell command line. Without one it opens the command
+/// line as `shell `.
+pub const SHELL: &str = "shell";
+
 /// Flag of `open_with` that detaches the program instead of suspending tansu for it.
 pub const DETACH_FLAG: &str = "-d";
 
@@ -230,6 +238,27 @@ pub fn parse(line: &str) -> Option<Result<ConsoleCommand, ConsoleError>> {
       ConsoleCommand::Action(Action::Rename)
     } else {
       ConsoleCommand::Rename(new_name.to_string())
+    }));
+  }
+  if name == SHELL {
+    let rest = rest_after_command(line);
+    if rest.trim().is_empty() {
+      return Some(Ok(ConsoleCommand::Action(Action::Shell)));
+    }
+    // The command goes to the shell as typed, quotes and all.
+    let (flags, command) = match rest.strip_prefix('-') {
+      Some(after) => {
+        let end = after.find(char::is_whitespace).unwrap_or(after.len());
+        (&after[..end], after[end..].trim_start())
+      }
+      None => ("", rest),
+    };
+    if command.trim().is_empty() {
+      return Some(Err(ConsoleError::MissingCommand));
+    }
+    return Some(Ok(ConsoleCommand::Shell {
+      flags: flags.to_string(),
+      command: command.to_string(),
     }));
   }
   match name {
@@ -259,6 +288,8 @@ pub struct CompletionSource<'a> {
   pub programs: &'a dyn Fn() -> &'a [String],
   /// Directory names inside a typed directory (`""`, `src/`, `~/`), for `cd`.
   pub subdirs: &'a dyn Fn(&str) -> Vec<String>,
+  /// Names of the listed entries in the current directory, for `shell` arguments.
+  pub files: &'a dyn Fn() -> Vec<String>,
 }
 
 /// Names offered for the first word. Commands that take an argument end in a space so the
@@ -267,10 +298,10 @@ fn command_names() -> Vec<String> {
   let mut names: Vec<String> = Action::ALL
     .iter()
     .map(|a| a.name())
-    .filter(|n| !n.contains(' ') && *n != RENAME)
+    .filter(|n| !n.contains(' ') && *n != RENAME && *n != SHELL)
     .map(str::to_string)
     .collect();
-  names.extend([CD, OPEN_WITH, RENAME, SORT, Z].map(|n| format!("{n} ")));
+  names.extend([CD, OPEN_WITH, RENAME, SHELL, SORT, Z].map(|n| format!("{n} ")));
   names.sort();
   names.dedup();
   names
@@ -280,6 +311,7 @@ fn command_names() -> Vec<String> {
 /// matches. The first word completes to a command name; after it, `rename` offers the
 /// selected name, `sort` the sort types, `open_with [-d]` the programs on `PATH` and `cd`
 /// the directories at the typed path. Hidden directories are offered once a `.` is typed.
+/// `shell` completes like ranger's: see [`complete_shell`].
 pub fn completions(line: &str, src: &CompletionSource) -> Vec<String> {
   let line = line.trim_start();
   let Some(split) = line.find(char::is_whitespace) else {
@@ -329,8 +361,46 @@ pub fn completions(line: &str, src: &CompletionSource) -> Vec<String> {
         .map(|p| format!("{head}{p}"))
         .collect()
     }
+    SHELL => complete_shell(line, arg, src),
     _ => Vec::new(),
   }
+}
+
+/// Completion for `shell [-flags] command`, as in ranger: the first word of the command
+/// completes to a program on `PATH`; after a space the selected name is inserted; a partial
+/// word completes to the names in the current directory. Names are backslash-escaped.
+fn complete_shell(line: &str, arg: &str, src: &CompletionSource) -> Vec<String> {
+  let command = match arg.strip_prefix('-') {
+    Some(after) => match after.find(char::is_whitespace) {
+      Some(end) => after[end..].trim_start(),
+      // Still typing the flags.
+      None => return Vec::new(),
+    },
+    None => arg,
+  };
+  let head = &line[..line.len() - command.len()];
+  if !command.contains(' ') {
+    return (src.programs)()
+      .iter()
+      .filter(|p| p.starts_with(command))
+      .map(|p| format!("{head}{p} "))
+      .collect();
+  }
+  if command.ends_with(' ') {
+    return vec![match src.selected {
+      Some(name) => format!("{line}{} ", crate::shell::shell_escape(name)),
+      None => format!("{line}%s "),
+    }];
+  }
+  let Some((before, word)) = line.rsplit_once(' ') else {
+    return Vec::new();
+  };
+  (src.files)()
+    .iter()
+    .map(|n| crate::shell::shell_escape(n))
+    .filter(|n| n.starts_with(word))
+    .map(|n| format!("{before} {n}"))
+    .collect()
 }
 
 fn parse_words<'a>(

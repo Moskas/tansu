@@ -4,6 +4,7 @@
 
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::Arc;
@@ -22,6 +23,7 @@ use crate::graphics::EncodedImage;
 use crate::keymap::{Key, KeyResult, Keymap};
 use crate::nav::{Cursor, ScrollPos};
 use crate::preview::Preview;
+use crate::shell::{MacroContext, ShellFlags, ShellMode};
 use crate::vcs::{DirVcs, FileStatus, Mark, RepoStatus, VcsRequest};
 
 const PREVIEW_CACHE_LIMIT: usize = 128;
@@ -72,6 +74,13 @@ pub enum Command {
   },
   /// Put this on the system clipboard.
   Clipboard(clipboard::Content),
+  /// Run `script` with the user's shell in `cwd`. `program` names it in messages.
+  Shell {
+    script: OsString,
+    cwd: PathBuf,
+    mode: ShellMode,
+    program: String,
+  },
   /// Record a visit to this directory in the zoxide database.
   ZoxideAdd(PathBuf),
   /// Look up the best zoxide match for `keywords`, other than `exclude`.
@@ -399,6 +408,11 @@ impl App {
           self.set_error(e);
         }
       }
+      Event::ProgramExited { program, result } => self.on_foreground_exit(&program, result),
+      Event::DetachedExited => {
+        let cwd = self.cwd.clone();
+        self.request_dir(&cwd, true);
+      }
       Event::Zoxide(result) => match result {
         Ok(path) => self.go_to(path, console::Z),
         Err(e) => self.set_error(e),
@@ -456,7 +470,46 @@ impl App {
       Some(Ok(ConsoleCommand::Rename(name))) => self.rename_selected(&name),
       Some(Ok(ConsoleCommand::Cd(path))) => self.cd(&path, console::CD),
       Some(Ok(ConsoleCommand::Zoxide(words))) => self.zoxide(words),
+      Some(Ok(ConsoleCommand::Shell { flags, command })) => self.shell(&flags, &command),
     }
+  }
+
+  /// `:shell [-flags] command`: expands the macros and runs the command in the current
+  /// directory, the way the flags ask for.
+  fn shell(&mut self, flags: &str, command: &str) {
+    let flags = ShellFlags::parse(flags);
+    let selected = self.selected().map(|e| e.path.clone());
+    let ctx = MacroContext {
+      dir: &self.cwd,
+      selected: selected.as_deref(),
+    };
+    let script = match crate::shell::expand_macros(command, &ctx) {
+      Ok(script) => flags.apply_sudo(script),
+      Err(e) => {
+        self.set_error(format!("{}: {e}", console::SHELL));
+        return;
+      }
+    };
+    let program = command
+      .split_whitespace()
+      .next()
+      .unwrap_or_default()
+      .to_string();
+    if matches!(flags.mode, ShellMode::Detached | ShellMode::Terminal) {
+      self.set_info(format!("running {program}"));
+    }
+    self.commands.push(Command::Shell {
+      script,
+      cwd: self.cwd.clone(),
+      mode: flags.mode,
+      program,
+    });
+  }
+
+  /// Opens the command line as `shell `, ready for a command.
+  fn prompt_shell(&mut self) {
+    self.keymap.reset();
+    self.console = Some(LineEditor::with_input(format!("{} ", console::SHELL)));
   }
 
   /// `:cd`: no argument goes home, `-` to the previous directory, anything else is a path.
@@ -538,10 +591,17 @@ impl App {
         let dir = crate::fs::path::resolve(typed, &self.cwd, self.home.as_deref());
         crate::fs::path::subdirectories(&dir)
       };
+      let files = || {
+        (0..self.visible.len())
+          .filter_map(|i| self.visible_entry(i))
+          .map(|e| e.name.clone())
+          .collect()
+      };
       let src = CompletionSource {
         selected: self.selected().map(|e| e.name.as_str()),
         programs: &programs,
         subdirs: &subdirs,
+        files: &files,
       };
       let lines = console::completions(&input, &src);
       if lines.is_empty() {
@@ -788,8 +848,8 @@ impl App {
     self.commands.push(Command::Clipboard(content));
   }
 
-  /// Called after a foreground program returned the terminal. The program may have changed
-  /// files, so the current directory is listed again.
+  /// Called after a foreground program returned the terminal, or a silent shell command
+  /// finished. The program may have changed files, so the current directory is listed again.
   pub fn on_foreground_exit(&mut self, program: &str, result: Result<ExitStatus, String>) {
     match result {
       Ok(status) if status.success() => {}
@@ -894,6 +954,7 @@ impl App {
       | Action::YankName
       | Action::YankNameWithoutExt
       | Action::YankFile => self.yank(action),
+      Action::Shell => self.prompt_shell(),
       Action::Reload => self.reload(),
       Action::ToggleMetadata => {
         self.show_metadata = !self.show_metadata;
