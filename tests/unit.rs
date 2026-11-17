@@ -913,7 +913,12 @@ fn resolves_typed_paths() {
 fn completes_command_names() {
   assert_eq!(
     complete_with("tog", None),
-    vec!["toggle_help", "toggle_hidden", "toggle_metadata"]
+    vec![
+      "toggle_help",
+      "toggle_hidden",
+      "toggle_mark",
+      "toggle_metadata"
+    ]
   );
   // Commands that take an argument get a trailing space.
   assert_eq!(complete_with("ren", None), vec!["rename "]);
@@ -1089,9 +1094,11 @@ fn shell_macros_expand_to_quoted_paths() {
   use std::path::{Path, PathBuf};
   use tansu::shell::{MacroContext, MacroError, expand_macros};
   let file = Path::new("/home/u/it's a file.txt");
+  let selection = [file.to_path_buf()];
   let ctx = MacroContext {
     dir: Path::new("/home/u"),
     selected: Some(file),
+    selection: &selection,
     copied: &[],
   };
   let expand = |s: &str| expand_macros(s, &ctx).map(|o| o.into_string().unwrap());
@@ -1121,6 +1128,7 @@ fn shell_macros_expand_to_quoted_paths() {
   let empty = MacroContext {
     dir: Path::new("/tmp/empty"),
     selected: None,
+    selection: &[],
     copied: &[],
   };
   assert_eq!(expand_macros("touch new %s", &empty).unwrap(), "touch new ");
@@ -1135,12 +1143,27 @@ fn shell_macros_expand_to_quoted_paths() {
   let buffer = MacroContext {
     dir: Path::new("/tmp"),
     selected: None,
+    selection: &[],
     copied: &copied,
   };
   assert_eq!(
     expand_macros("cp %c .", &buffer).unwrap(),
     "cp '/a/x y' '/b/z' ."
   );
+
+  // With marks, `%s` and `%p` are every marked entry; `%f` stays the selected one.
+  let marked = [PathBuf::from("/d/a b"), PathBuf::from("/d/c")];
+  let multi = MacroContext {
+    dir: Path::new("/d"),
+    selected: Some(Path::new("/d/c")),
+    selection: &marked,
+    copied: &[],
+  };
+  let expand = |s: &str| expand_macros(s, &multi).map(|o| o.into_string().unwrap());
+  assert_eq!(expand("rm %s").unwrap(), "rm 'a b' 'c'");
+  assert_eq!(expand("rm %p").unwrap(), "rm '/d/a b' '/d/c'");
+  assert_eq!(expand("%P").unwrap(), expand("%p").unwrap());
+  assert_eq!(expand("vim %f").unwrap(), "vim 'c'");
 }
 
 #[test]
@@ -1186,9 +1209,11 @@ fn shell_commands_run_in_the_given_directory() {
   let tmp = tempfile::tempdir().unwrap();
   let file = tmp.path().join(r#"it's $HOME & "x".txt"#);
   std::fs::write(&file, "").unwrap();
+  let selection = [file.clone()];
   let ctx = MacroContext {
     dir: tmp.path(),
     selected: Some(&file),
+    selection: &selection,
     copied: &[],
   };
   // `%f` is a bare name, so this only passes when the shell runs in `dir`.

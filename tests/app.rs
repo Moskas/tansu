@@ -940,6 +940,8 @@ fn tab_cycles_through_matching_commands() {
   assert_eq!(console_input(&app), "toggle_help");
   press(&mut app, "<Tab>");
   assert_eq!(console_input(&app), "toggle_hidden");
+  press(&mut app, "<Tab>");
+  assert_eq!(console_input(&app), "toggle_mark");
   press(&mut app, "<Tab><Tab>");
   assert_eq!(console_input(&app), "toggle_help");
   press(&mut app, "<S-Tab>");
@@ -1399,4 +1401,119 @@ fn shell_c_macro_expands_to_the_copy_buffer() {
       program: "cp".into(),
     }]
   );
+}
+
+fn marked_names(app: &App) -> Vec<String> {
+  app
+    .marked_entries()
+    .iter()
+    .map(|e| e.name.clone())
+    .collect()
+}
+
+#[test]
+fn space_marks_the_selection_and_moves_down() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj<Space><Space>");
+  assert_eq!(marked_names(&app), vec!["file2.txt", "file10.txt"]);
+  assert_eq!(selected(&app), "好きな歌のタイトル.mp3");
+  // Pressing it on a marked entry unmarks it.
+  press(&mut app, "k<Space>");
+  assert_eq!(marked_names(&app), vec!["file2.txt"]);
+  // On the last entry the cursor stays.
+  press(&mut app, "G<Space>");
+  assert_eq!(selected(&app), "好きな歌のタイトル.mp3");
+  assert_eq!(marked_names(&app).len(), 2);
+}
+
+#[test]
+fn v_toggles_the_marks_of_every_visible_entry() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "v");
+  assert_eq!(marked_names(&app), names(&app));
+  assert!(
+    !app.is_marked(&work.join(".dotfile")),
+    "hidden entries stay unmarked"
+  );
+  press(&mut app, "v");
+  assert!(marked_names(&app).is_empty());
+  press(&mut app, "v");
+  assert_eq!(marked_names(&app).len(), names(&app).len());
+  press(&mut app, "v");
+  // Like ranger, existing marks are inverted.
+  press(&mut app, "<Space>v");
+  assert!(!app.is_marked(&work.join("alpha")));
+  assert_eq!(marked_names(&app).len(), names(&app).len() - 1);
+}
+
+#[test]
+fn marks_are_kept_per_directory() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj<Space>gglv");
+  assert_eq!(marked_names(&app), vec!["a.txt", "b.txt"]);
+  press(&mut app, "h");
+  assert_eq!(marked_names(&app), vec!["file2.txt"]);
+  // `uv` clears only the current directory's marks.
+  press(&mut app, "<Space>uv");
+  assert!(marked_names(&app).is_empty());
+  assert!(app.is_marked(&work.join("alpha/a.txt")));
+}
+
+#[test]
+fn yy_and_dd_act_on_all_marked_entries() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj<Space><Space>yy");
+  assert_eq!(message(&app), "copied 2 items");
+  press(&mut app, "ggjlpp");
+  assert_eq!(message(&app), "copied 2 items");
+  let mut listed = names(&app);
+  listed.sort();
+  assert_eq!(listed, vec!["file10.txt", "file2.txt"]);
+
+  // Moved entries lose their marks.
+  press(&mut app, "v");
+  assert_eq!(marked_names(&app).len(), 2);
+  press(&mut app, "ddhpp");
+  assert_eq!(message(&app), "moved 2 items");
+  assert!(!work.join("beta/file2.txt").exists());
+  assert!(
+    app.is_marked(&work.join("file2.txt")),
+    "the original was marked before"
+  );
+  press(&mut app, "ggjl");
+  assert!(names(&app).is_empty());
+  assert!(!app.is_marked(&work.join("beta/file2.txt")));
+}
+
+#[test]
+fn shell_macros_use_the_marked_entries() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj<Space><Space>");
+  app.run_command_line("shell -f echo %s");
+  let cmds = app.take_commands();
+  let Some(Command::Shell { script, .. }) = cmds.last() else {
+    panic!("no shell command: {cmds:?}");
+  };
+  assert_eq!(script, "echo 'file2.txt' 'file10.txt'");
+}
+
+#[test]
+fn marked_entries_are_bold_in_the_marked_color() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj<Space>");
+  let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
+  terminal.draw(|f| tansu::ui::render(f, &app)).unwrap();
+  let buf = terminal.backend().buffer();
+  // `file2.txt` is the fourth row of the current column.
+  let cell = &buf[(12, 5)];
+  assert_eq!(cell.fg, app.config.theme.marked.0);
+  assert!(cell.modifier.contains(Modifier::BOLD));
+  assert!(!buf[(12, 6)].modifier.contains(Modifier::BOLD));
+  assert!(render(&app)[HEIGHT as usize - 1].contains("1 marked"));
 }

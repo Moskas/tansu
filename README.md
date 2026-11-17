@@ -100,9 +100,12 @@ cargo test
 | `os`                        | Sort by size, largest first   |
 | `om`                        | Sort by modification time     |
 | `oc`                        | Sort by change time           |
+| `<Space>`                   | Mark / unmark, move down      |
+| `v`                         | Invert marks in the directory |
+| `uv`                        | Unmark all in the directory   |
 | `r`                         | Rename the selection          |
-| `yy`                        | Copy the selection            |
-| `dd`                        | Cut the selection             |
+| `yy`                        | Copy the marked or selected   |
+| `dd`                        | Cut the marked or selected    |
 | `pp`                        | Paste, never overwriting      |
 | `po`                        | Paste, overwriting            |
 | `uy`, `ud`                  | Clear the copy/cut buffer     |
@@ -130,9 +133,23 @@ keeps the selected entry under the cursor and applies to every column.
 Files are opened with the configured opener (default `xdg-open`), detached from the
 terminal so tansu stays usable.
 
+## Marking
+
+As in ranger, `<Space>` marks the selected entry, or unmarks it if it is marked, and moves
+the cursor down. `v` toggles the mark of every visible entry in the directory: with nothing
+marked it marks everything, and pressed again it unmarks everything. `uv` unmarks every entry
+in the directory, whatever was marked before. Marked entries are drawn
+bold in the `marked` theme color, and the status bar shows their count and size.
+
+Marks belong to their directory and are kept when you leave it and come back. Entries that
+disappear (renamed, moved or deleted) lose their mark, and hidden entries are never acted on.
+While the current directory has marked entries, `yy`, `dd`, `yp`, `yn`, `y.`, `yf` and the
+`%s` and `%p` shell macros act on all of them instead of the selection.
+
 ## Copy, cut and paste
 
-`yy` copies and `dd` cuts the selection into a buffer, replacing what was in it; `pp` pastes it
+`yy` copies and `dd` cuts the selection (or the marked entries) into a buffer, replacing what
+was in it; `pp` pastes it
 into the current directory. A cut followed by a paste is a move. The buffer survives
 directory changes. After a copy it can be pasted again; after a cut it is emptied once the
 move succeeds. `uy` or `ud` clears it.
@@ -154,7 +171,8 @@ pasted entry is selected when done.
 The `y` keys write to the system clipboard. `yp` yanks the selection's full path, `yd` the
 current directory's path, `yn` the selection's name and `y.` that name without its last
 extension. `yf` yanks the selected file itself as a `text/uri-list` (`file:///...`), so
-pasting into a graphical file manager, browser or chat client pastes the file.
+pasting into a graphical file manager, browser or chat client pastes the file. With marked
+entries, `yp`, `yn` and `y.` yank one line per entry and `yf` yanks all the files.
 
 Clipboard access goes through `wl-copy` (wl-clipboard) when `WAYLAND_DISPLAY` is set, and
 otherwise through `xclip` or `xsel` when `DISPLAY` is set. Without any of these, text is sent
@@ -202,8 +220,8 @@ shell. These macros are expanded first, each value shell-quoted:
 | Macro      | Expands to                                                          |
 |------------|---------------------------------------------------------------------|
 | `%f`       | Name of the selected entry                                          |
-| `%s`       | Names of the selected entries (currently the selected one)          |
-| `%p`       | Full paths of the selected entries                                  |
+| `%s`       | Names of the marked entries, or of the selected one                 |
+| `%p`       | Full paths of the marked entries, or of the selected one            |
 | `%d`       | The current directory                                               |
 | `%c`       | Full paths in the copy/cut buffer (`yy`, `dd`)                      |
 | `%D`, `%F` | Next tab's directory and file path; tansu has one tab, so this one  |
@@ -323,6 +341,7 @@ audio = "#d3869b"
 document = "#ebdbb2"
 code = "#ebdbb2"
 special = "#d79921"
+marked = "#fabd2f"        # marked entries, drawn bold
 # cursor_fg = "#282828"   # unset: selected rows use reverse video, like ranger
 # cursor_bg = "#7c9f88"
 status_fg = "#d5c4a1"

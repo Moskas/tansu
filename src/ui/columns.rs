@@ -301,7 +301,7 @@ fn draw_list(
 /// One entry row, laid out like ranger: a one-cell gutter (reserved for tag markers),
 /// `icon name~`, padding, the info string, and VCS marks flush with the right edge.
 /// Info and marks are dropped when they would leave fewer than three cells for the name.
-/// The highlighted row is filled edge to edge.
+/// The highlighted row is filled edge to edge. Marked entries are bold in the marked color.
 fn draw_row(
   buf: &mut Buffer,
   row: Rect,
@@ -316,7 +316,10 @@ fn draw_row(
   if width == 0 {
     return;
   }
-  let base = entry_style(entry, theme);
+  let mut base = entry_style(entry, theme);
+  if app.is_marked(&entry.path) {
+    base = base.fg(theme.marked.0).add_modifier(Modifier::BOLD);
+  }
   let style = if highlighted {
     let s = cursor_style(base, theme);
     buf.set_style(row, s);

@@ -98,6 +98,8 @@ pub struct MacroContext<'a> {
   pub dir: &'a Path,
   /// The selected entry's full path.
   pub selected: Option<&'a Path>,
+  /// Full paths of the marked entries, or of the selected entry when none are marked.
+  pub selection: &'a [PathBuf],
   /// Paths in the copy/cut buffer.
   pub copied: &'a [PathBuf],
 }
@@ -112,8 +114,8 @@ pub enum MacroError {
 ///
 /// - `%f`: the selected file's name
 /// - `%d`: the current directory
-/// - `%s`: the names of the selected files (the selected file)
-/// - `%p`: the full paths of the selected files
+/// - `%s`: the names of the marked files, or the selected file when none are marked
+/// - `%p`: the full paths of the marked files, or of the selected file
 /// - `%c`: full paths in the copy/cut buffer
 /// - `%t`: tagged files, which tansu does not have, so empty
 /// - `%D`, `%F`, `%S`, `%P`: the same for the next tab, which is this one; `%F` and `%S` are
@@ -168,10 +170,15 @@ fn macro_value(name: &str, ctx: &MacroContext) -> Result<Option<Vec<u8>>, MacroE
       shell_quote(name.as_bytes())
     }
     "d" => shell_quote(ctx.dir.as_os_str().as_bytes()),
-    "s" => file_name().map_or_else(Vec::new, |n| shell_quote(n.as_bytes())),
-    "p" => ctx
-      .selected
-      .map_or_else(Vec::new, |p| shell_quote(p.as_os_str().as_bytes())),
+    "s" => {
+      let quoted: Vec<Vec<u8>> = ctx
+        .selection
+        .iter()
+        .map(|p| shell_quote(p.file_name().unwrap_or(p.as_os_str()).as_bytes()))
+        .collect();
+      quoted.join(&b' ')
+    }
+    "p" => quote_all(ctx.selection),
     "c" => quote_all(ctx.copied),
     "t" => Vec::new(),
     // The next tab's directory, file and selection. Tansu has a single tab, which ranger
@@ -183,9 +190,7 @@ fn macro_value(name: &str, ctx: &MacroContext) -> Result<Option<Vec<u8>>, MacroE
         .ok_or_else(|| MacroError::NothingSelected(name.to_string()))?;
       shell_quote(path.as_os_str().as_bytes())
     }
-    "S" | "P" => ctx
-      .selected
-      .map_or_else(Vec::new, |p| shell_quote(p.as_os_str().as_bytes())),
+    "S" | "P" => quote_all(ctx.selection),
     _ => return Ok(None),
   };
   Ok(Some(value))

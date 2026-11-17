@@ -32,11 +32,23 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App) {
   let free = app
     .free_space()
     .map_or_else(|| "?".to_string(), |b| human_size_compact(b, binary));
-  let right = format!(
-    "{} sum, {free} free  {pos}/{len}  {}",
-    human_size_compact(app.visible_file_bytes(), binary),
-    app.scroll_pos()
-  );
+  let marked = app.marked_entries();
+  let right = if marked.is_empty() {
+    format!(
+      "{} sum, {free} free  {pos}/{len}  {}",
+      human_size_compact(app.visible_file_bytes(), binary),
+      app.scroll_pos()
+    )
+  } else {
+    // Like ranger: the size and count of the marked entries in place of the totals.
+    let bytes = marked.iter().filter(|e| !e.is_dir()).map(|e| e.size).sum();
+    format!(
+      "{} sum, {} marked  {pos}/{len}  {}",
+      human_size_compact(bytes, binary),
+      marked.len(),
+      app.scroll_pos()
+    )
+  };
   let right_w = display_width(&right) as u16;
   let right_x = area.right().saturating_sub(right_w).max(area.x);
   buf.set_stringn(right_x, area.y, &right, area.width as usize, base);

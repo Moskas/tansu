@@ -180,6 +180,8 @@ pub struct Theme {
   pub document: ThemeColor,
   pub code: ThemeColor,
   pub special: ThemeColor,
+  /// Marked entries, drawn bold in this color like ranger's yellow.
+  pub marked: ThemeColor,
   /// Selected-row colors. Unset, the row is drawn in reverse video like ranger: the entry's
   /// color becomes the background. Setting either one overrides that side only.
   pub cursor_fg: Option<ThemeColor>,
@@ -227,6 +229,7 @@ impl Default for Theme {
       document: hex(0xebdbb2),
       code: hex(0xebdbb2),
       special: hex(0xd79921),
+      marked: hex(0xfabd2f),
       cursor_fg: None,
       cursor_bg: None,
       status_fg: hex(0xd5c4a1),

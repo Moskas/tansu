@@ -181,6 +181,9 @@ pub struct App {
   pub should_quit: bool,
   /// Copy/cut buffer, kept across directory changes.
   pub buffer: Option<FileBuffer>,
+  /// Marked entries (`<Space>`, `v`), by full path. Like ranger, marks are kept per directory
+  /// across directory changes; operations use the marks of the current directory only.
+  marked: HashSet<PathBuf>,
   pub message: Option<Message>,
   pub preview: Option<PreviewSlot>,
   dirs: HashMap<PathBuf, DirState>,
@@ -236,6 +239,7 @@ impl App {
       show_metadata: false,
       should_quit: false,
       buffer: None,
+      marked: HashSet::new(),
       message: None,
       preview: None,
       dirs: HashMap::new(),
@@ -298,6 +302,28 @@ impl App {
 
   pub fn selected(&self) -> Option<&Entry> {
     self.visible_entry(self.cursor.index)
+  }
+
+  pub fn is_marked(&self, path: &Path) -> bool {
+    self.marked.contains(path)
+  }
+
+  /// Marked entries of the current directory that pass the hidden filter, in listing order.
+  pub fn marked_entries(&self) -> Vec<&Entry> {
+    (0..self.visible.len())
+      .filter_map(|i| self.visible_entry(i))
+      .filter(|e| self.marked.contains(&e.path))
+      .collect()
+  }
+
+  /// What file operations act on: the marked entries, or the selected one when none are.
+  pub fn selection(&self) -> Vec<&Entry> {
+    let marked = self.marked_entries();
+    if marked.is_empty() {
+      self.selected().into_iter().collect()
+    } else {
+      marked
+    }
   }
 
   /// Number of entries in a directory, hidden ones included (as ranger counts).
@@ -482,6 +508,7 @@ impl App {
   fn shell(&mut self, flags: &str, command: &str) {
     let flags = ShellFlags::parse(flags);
     let selected = self.selected().map(|e| e.path.clone());
+    let selection: Vec<PathBuf> = self.selection().iter().map(|e| e.path.clone()).collect();
     let copied = self
       .buffer
       .as_ref()
@@ -489,6 +516,7 @@ impl App {
     let ctx = MacroContext {
       dir: &self.cwd,
       selected: selected.as_deref(),
+      selection: &selection,
       copied: copied.as_slice(),
     };
     let script = match crate::shell::expand_macros(command, &ctx) {
@@ -707,21 +735,51 @@ impl App {
     });
   }
 
-  /// `yy` / `dd`: puts the selected entry into the buffer, replacing what was there.
-  fn fill_buffer(&mut self, mode: PasteMode) {
-    let Some(entry) = self.selected().cloned() else {
-      self.set_error("nothing selected");
+  /// `<Space>`: toggles the mark on the selected entry and moves down, like ranger.
+  fn toggle_mark(&mut self) {
+    let Some(path) = self.selected().map(|e| e.path.clone()) else {
       return;
     };
-    self.buffer = Some(FileBuffer {
-      paths: vec![entry.path],
-      mode,
-    });
+    if !self.marked.remove(&path) {
+      self.marked.insert(path);
+    }
+    self.move_cursor(1);
+  }
+
+  /// `v`: toggles the mark on every visible entry, like ranger's `mark_files all=True
+  /// toggle=True`. Starting with no marks, it marks everything; pressed again, it unmarks.
+  fn invert_marks(&mut self) {
+    let paths: Vec<PathBuf> = (0..self.visible.len())
+      .filter_map(|i| self.visible_entry(i))
+      .map(|e| e.path.clone())
+      .collect();
+    for path in paths {
+      if !self.marked.remove(&path) {
+        self.marked.insert(path);
+      }
+    }
+  }
+
+  /// `yy` / `dd`: puts the marked entries (or the selected one) into the buffer, replacing
+  /// what was there.
+  fn fill_buffer(&mut self, mode: PasteMode) {
+    let (paths, what) = match self.selection().as_slice() {
+      [] => {
+        self.set_error("nothing selected");
+        return;
+      }
+      [one] => (vec![one.path.clone()], one.name.clone()),
+      many => (
+        many.iter().map(|e| e.path.clone()).collect(),
+        items(many.len()),
+      ),
+    };
+    self.buffer = Some(FileBuffer { paths, mode });
     let verb = match mode {
       PasteMode::Copy => "copied",
       PasteMode::Move => "cut",
     };
-    self.set_info(format!("{verb} {}", entry.name));
+    self.set_info(format!("{verb} {what}"));
   }
 
   /// `pp` / `po`: pastes the buffer into the current directory.
@@ -819,38 +877,39 @@ impl App {
     }
   }
 
-  /// `yp`, `yd`, `yn`, `y.` and `yf`: puts a path, a name or the selected file itself on the
-  /// system clipboard.
+  /// `yp`, `yd`, `yn`, `y.` and `yf`: puts paths, names or the files themselves on the
+  /// system clipboard. All but `yd` act on the marked entries (or the selected one); several
+  /// paths or names are put one per line.
   fn yank(&mut self, action: Action) {
-    let path = if action == Action::YankDir {
-      self.cwd.clone()
+    let paths: Vec<PathBuf> = if action == Action::YankDir {
+      vec![self.cwd.clone()]
     } else {
-      match self.selected() {
-        Some(entry) => entry.path.clone(),
-        None => {
-          self.set_error("nothing selected");
-          return;
-        }
-      }
+      self.selection().iter().map(|e| e.path.clone()).collect()
     };
-    let name = || path.file_name().unwrap_or(path.as_os_str());
+    if paths.is_empty() {
+      self.set_error("nothing selected");
+      return;
+    }
+    let name = |p: &Path| p.file_name().unwrap_or(p.as_os_str()).to_owned();
+    let text = |p: &PathBuf| {
+      let s = match action {
+        Action::YankName => name(p),
+        Action::YankNameWithoutExt => p.file_stem().map_or_else(|| name(p), ToOwned::to_owned),
+        _ => p.as_os_str().to_owned(),
+      };
+      s.to_string_lossy().into_owned()
+    };
     let content = match action {
-      Action::YankFile => clipboard::Content::Files(vec![path.clone()]),
-      Action::YankName => clipboard::Content::Text(name().to_string_lossy().into_owned()),
-      Action::YankNameWithoutExt => {
-        let stem = path.file_stem().unwrap_or_else(name);
-        clipboard::Content::Text(stem.to_string_lossy().into_owned())
-      }
-      _ => clipboard::Content::Text(path.to_string_lossy().into_owned()),
+      Action::YankFile => clipboard::Content::Files(paths.clone()),
+      _ => clipboard::Content::Text(paths.iter().map(text).collect::<Vec<_>>().join("\n")),
     };
-    let shown = match &content {
-      clipboard::Content::Text(text) => crate::fs::entry::sanitize(text),
-      clipboard::Content::Files(_) => {
-        format!(
-          "file {}",
-          crate::fs::entry::sanitize(&name().to_string_lossy())
-        )
-      }
+    let shown = match (&content, paths.as_slice()) {
+      (_, [_, _, ..]) => items(paths.len()),
+      (clipboard::Content::Text(text), _) => crate::fs::entry::sanitize(text),
+      (clipboard::Content::Files(_), _) => format!(
+        "file {}",
+        crate::fs::entry::sanitize(&name(&paths[0]).to_string_lossy())
+      ),
     };
     self.set_info(format!("yanked {shown}"));
     self.commands.push(Command::Clipboard(content));
@@ -948,6 +1007,12 @@ impl App {
         self.set_info(format!("hidden files {state}"));
       }
       Action::Sort(key) => self.set_sort(key),
+      Action::ToggleMark => self.toggle_mark(),
+      Action::InvertMarks => self.invert_marks(),
+      Action::UnmarkAll => {
+        let cwd = self.cwd.clone();
+        self.marked.retain(|p| p.parent() != Some(cwd.as_path()));
+      }
       Action::Rename => self.prompt_rename(),
       Action::Copy => self.fill_buffer(PasteMode::Copy),
       Action::Cut => self.fill_buffer(PasteMode::Move),
@@ -1181,6 +1246,11 @@ impl App {
     };
     match result {
       Ok(mut listing) => {
+        // Entries that are gone (renamed, moved, deleted) lose their marks.
+        let present: HashSet<&Path> = listing.entries.iter().map(|e| e.path.as_path()).collect();
+        self
+          .marked
+          .retain(|p| p.parent() != Some(path.as_path()) || present.contains(p.as_path()));
         self.sort_listing(&mut listing);
         self.counts.insert(path.clone(), listing.count());
         self.request_vcs(&listing);

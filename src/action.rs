@@ -21,6 +21,9 @@ pub enum Action {
   ToggleHidden,
   ToggleMetadata,
   Sort(SortKey),
+  ToggleMark,
+  InvertMarks,
+  UnmarkAll,
   Rename,
   Copy,
   Cut,
@@ -40,7 +43,7 @@ pub enum Action {
 }
 
 impl Action {
-  pub const ALL: [Action; 33] = [
+  pub const ALL: [Action; 36] = [
     Action::MoveUp,
     Action::MoveDown,
     Action::MoveTop,
@@ -58,6 +61,9 @@ impl Action {
     Action::Sort(SortKey::Size),
     Action::Sort(SortKey::Mtime),
     Action::Sort(SortKey::Ctime),
+    Action::ToggleMark,
+    Action::InvertMarks,
+    Action::UnmarkAll,
     Action::Rename,
     Action::Copy,
     Action::Cut,
@@ -96,6 +102,9 @@ impl Action {
       Action::Sort(SortKey::Size) => "sort size",
       Action::Sort(SortKey::Mtime) => "sort mtime",
       Action::Sort(SortKey::Ctime) => "sort ctime",
+      Action::ToggleMark => "toggle_mark",
+      Action::InvertMarks => "invert_marks",
+      Action::UnmarkAll => "unmark_all",
       Action::Rename => "rename",
       Action::Copy => "copy",
       Action::Cut => "cut",
@@ -134,9 +143,12 @@ impl Action {
       Action::Sort(SortKey::Size) => "Sort by size, largest first",
       Action::Sort(SortKey::Mtime) => "Sort by modification time, newest first",
       Action::Sort(SortKey::Ctime) => "Sort by change time, newest first",
+      Action::ToggleMark => "Mark / unmark the selection and move down",
+      Action::InvertMarks => "Invert the marks in this directory",
+      Action::UnmarkAll => "Unmark everything in this directory",
       Action::Rename => "Rename the selection",
-      Action::Copy => "Copy the selection into the buffer",
-      Action::Cut => "Cut the selection into the buffer",
+      Action::Copy => "Copy the marked entries (or selection) into the buffer",
+      Action::Cut => "Cut the marked entries (or selection) into the buffer",
       Action::Paste => "Paste the buffer here, never overwriting",
       Action::PasteOverwrite => "Paste the buffer here, overwriting",
       Action::ClearBuffer => "Clear the copy/cut buffer",
