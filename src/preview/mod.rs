@@ -2,6 +2,7 @@
 //! an entry and produces content wins. Free of UI types: previews are plain data.
 
 pub mod ansi;
+mod archive;
 pub mod audio;
 mod directory;
 pub mod ebook;
@@ -26,6 +27,7 @@ use serde::Deserialize;
 use crate::fs::{DirListing, Entry};
 
 pub use ansi::{SpanStyle, StyledLine, StyledSpan, TermColor};
+pub use archive::ArchivePreviewer;
 pub use audio::AudioPreviewer;
 pub use directory::DirectoryPreviewer;
 pub use ebook::EbookPreviewer;
@@ -130,10 +132,12 @@ impl PreviewRegistry {
     Self::default()
   }
 
-  /// Directory, playlists and other structured text, text, then metadata as the catch-all.
+  /// Directory, archive contents, playlists and other structured text, text, then metadata
+  /// as the catch-all.
   pub fn with_defaults() -> Self {
     let mut r = Self::new();
     r.register(100, Box::new(DirectoryPreviewer));
+    r.register(65, Box::new(ArchivePreviewer));
     r.register(60, Box::new(ListingPreviewer));
     r.register(50, Box::new(TextPreviewer::default()));
     r.register(0, Box::new(MetadataPreviewer));
@@ -153,6 +157,8 @@ impl PreviewRegistry {
     r.register(70, Box::new(PdfPreviewer { pages: images }));
     r.register(70, Box::new(EbookPreviewer { covers: images }));
     r.register(70, Box::new(AudioPreviewer { covers: images }));
+    // After ebooks, which are zips too but better shown by their cover.
+    r.register(65, Box::new(ArchivePreviewer));
     // Ahead of text: playlists, cue sheets and rip logs are text with a structure.
     r.register(60, Box::new(ListingPreviewer));
     let text = if highlight.enabled {

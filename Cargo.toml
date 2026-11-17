@@ -8,21 +8,27 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1"
+bzip2 = "0.6"
 chardetng = "1.0.0"
 crossterm = "0.29"
 directories = "6"
 encoding_rs = "0.8.44"
 fast_image_resize = { version = "6.1", features = ["image"] }
+flate2 = { version = "1.1.11", default-features = false, features = ["zlib-rs"] }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp", "rayon"] }
 kamadak-exif = "0.6"
 libc = "0.2"
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "lzip", "optimization"] }
 ratatui = "0.30"
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
+ruzstd = "0.9"
 serde = { version = "1", features = ["derive"] }
+tar = { version = "0.4.46", default-features = false }
 thiserror = "2"
 toml = "1"
 unicode-width = "0.2"
 zip = { version = "9.6.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz", "encoder"] }
 tempfile = "3"

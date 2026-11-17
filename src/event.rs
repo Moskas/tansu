@@ -53,6 +53,15 @@ pub enum Event {
     trashed: bool,
     results: Vec<(PathBuf, Result<(), String>)>,
   },
+  /// Result of extracting archives into `dest`: each archive with what it was extracted to,
+  /// or why it failed.
+  Extracted {
+    dest: PathBuf,
+    results: Vec<(
+      PathBuf,
+      Result<crate::archive::Extracted, crate::archive::ExtractError>,
+    )>,
+  },
   /// Result of creating a directory (`dir`) or an empty file at `path`.
   Created {
     path: PathBuf,

@@ -146,6 +146,19 @@ pub fn delete(paths: &[PathBuf], trash: Option<&Path>) -> Event {
   }
 }
 
+/// Extracts each of `archives` into `dest`, carrying on past failures. With `skip_damaged`,
+/// damaged members are left out instead of failing their archive.
+pub fn extract(archives: &[PathBuf], dest: &Path, skip_damaged: bool) -> Event {
+  let results = archives
+    .iter()
+    .map(|a| (a.clone(), crate::archive::extract(a, dest, skip_damaged)))
+    .collect();
+  Event::Extracted {
+    dest: dest.to_path_buf(),
+    results,
+  }
+}
+
 /// Creates a directory or an empty file.
 pub fn create(path: &Path, dir: bool) -> Event {
   Event::Created {
@@ -163,6 +176,8 @@ enum FileJob {
   Paste(PasteJob),
   /// Paths to delete, and the trash to move them into instead.
   Delete(Vec<PathBuf>, Option<PathBuf>),
+  /// Archives to extract, and the directory to extract them into.
+  Extract(Vec<PathBuf>, PathBuf, bool),
 }
 
 /// Starts the thread that runs pastes and deletions one after another, so they never race
@@ -178,6 +193,7 @@ fn spawn_file_worker(tx: Sender<Event>) -> Sender<FileJob> {
             paste(&sources, &dest, mode, overwrite)
           }
           FileJob::Delete(paths, trash) => delete(&paths, trash.as_deref()),
+          FileJob::Extract(archives, dest, skip) => extract(&archives, &dest, skip),
         };
         if tx.send(ev).is_err() {
           return;
@@ -507,6 +523,15 @@ impl Runtime {
       Command::Delete { paths, trash } => {
         let _ = self.files.send(FileJob::Delete(paths, trash));
       }
+      Command::Extract {
+        archives,
+        dest,
+        skip_damaged,
+      } => {
+        let _ = self
+          .files
+          .send(FileJob::Extract(archives, dest, skip_damaged));
+      }
       // Creating is a single fast syscall or two, like a rename.
       Command::Create { path, dir } => {
         let _ = self.tx.send(create(&path, dir));
@@ -575,6 +600,11 @@ pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLim
       overwrite,
     } => vec![paste(&sources, &dest, mode, overwrite)],
     Command::Delete { paths, trash } => vec![delete(&paths, trash.as_deref())],
+    Command::Extract {
+      archives,
+      dest,
+      skip_damaged,
+    } => vec![extract(&archives, &dest, skip_damaged)],
     Command::Create { path, dir } => vec![create(&path, dir)],
     Command::Open(_)
     | Command::Spawn { .. }

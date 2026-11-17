@@ -2,6 +2,7 @@
 
 pub mod action;
 pub mod app;
+pub mod archive;
 pub mod clipboard;
 pub mod config;
 pub mod console;

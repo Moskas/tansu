@@ -60,12 +60,16 @@ feature it provides is missing, and previews fall back to plain text or a metada
 | `ffmpeg`                   | Video frames, embedded audio covers         | `ffmpeg`            |
 | `pdftoppm`, `pdfinfo`      | PDF first pages and details                 | `poppler-utils`     |
 | `zoxide`                   | `:z` and recording visited directories      | `zoxide`            |
+| `7zz` or `7z`              | 7z, rar, iso and other archives             | `_7zz` or `p7zip`   |
+| `unrar`                    | rar archives (preferred for them)           | `unrar` (unfree)    |
+| `bsdtar`                   | Archives when 7-Zip is missing              | `libarchive`        |
 | `wl-copy`, `xclip`, `xsel` | The `y` clipboard keys (OSC 52 without)     | same names [^clip]  |
 | `xdg-open`                 | The default opener                          | `xdg-utils`         |
 
 [^clip]: `wl-copy` comes in the `wl-clipboard` package; `xclip` and `xsel` in their own.
 
-The wrapped Nix package includes `bat`, `ffmpeg`, `ffmpegthumbnailer` and `poppler-utils`.
+The wrapped Nix package includes `bat`, `ffmpeg`, `ffmpegthumbnailer`, `poppler-utils` and
+`libarchive`.
 
 ## Previews
 
@@ -113,6 +117,15 @@ text, an image, or a metadata block for everything else.
   date (or the page count, for comics), read by tansu itself: EPUB covers from the package
   file's cover entry, MOBI/AZW3 covers from the Kindle metadata, and the first page image
   of a CBZ. Damaged files fall back to the metadata preview.
+- Archives list their format, how many files, folders and links they hold, the unpacked
+  size and how far it is packed, encrypted members, the zip comment and where `x` would
+  extract them (`Extracts to`), then every member with its date and size in columns (the
+  date is left out in a narrow column). zip and tar, plain or compressed with gzip, bzip2,
+  xz, lzip or zstd, are read by tansu itself; `.gz` and the like show the file inside and
+  its size, or the tar archive inside. 7z, rar, iso, cab, cpio, deb, rpm and others are
+  listed by 7-Zip, unrar (rar only) or bsdtar, whichever is installed first; without one
+  they get the metadata preview. At most `max_entries` members are listed, and a compressed
+  tar is read for at most 256 MB of data; the details then say `at least`.
 - Rendered previews (video frames, PDF pages, covers) are scaled to at most 2048 pixels a
   side and cached in `$XDG_CACHE_HOME/tansu/thumbnails` (usually
   `~/.cache/tansu/thumbnails`, readable only by the user), keyed by path, size and
@@ -186,6 +199,7 @@ cargo test
 | `dT`                        | Move to the trash (asks)      |
 | `md`                        | Create a directory (`:mkdir`) |
 | `mf`                        | Create a file (`:touch`)      |
+| `x`                         | Extract the archive here      |
 | `uy`, `ud`                  | Clear the copy/cut buffer     |
 | `yp`                        | Yank the selection's path     |
 | `yd`                        | Yank the current directory    |
@@ -283,6 +297,37 @@ is refused, and `dD` has to be used instead.
 `/`, and a leading `~` is the home directory, as in `:cd`; missing parent directories are
 created, as in ranger. An existing entry is never
 replaced. The new entry (or the directory leading to it) is selected afterwards.
+
+## Extracting archives
+
+`x` (or `:extract`) extracts the selected archive, or every marked archive, into the
+current directory; marked entries that are not archives are skipped. An archive holding a
+single entry (one folder, or one file) puts that entry here as it is. Anything else goes
+into a new folder named after the archive (`photos.tar.gz` makes `photos/`). A plain
+compressed file (`notes.txt.gz`) is decompressed to `notes.txt`. Nothing is overwritten:
+a taken name gets a suffix, as with `pp`. The preview's `Extracts to` row shows the name
+beforehand (without that suffix).
+
+Each archive is unpacked into a hidden folder in the current directory first and moved
+into place when complete, so a failed extraction leaves nothing behind. Nothing is
+written outside the destination: `../` and absolute paths, and paths through a link that
+points out, are refused. Setuid and setgid bits are dropped, and zip and tar modification
+times are kept.
+
+When files in a zip are damaged (their data fails its checksum, as after a broken
+download), nothing is extracted at first: the damaged files are listed above the status
+bar, which asks whether to extract the rest. `y` extracts everything else and leaves the
+damaged files out, so no corrupt file ends up on disk; any other key aborts.
+
+zip file names are UTF-8, or, from tools on Japanese, Chinese or Korean Windows that
+write their code page without saying so, in an encoding detected from the names
+(Shift_JIS, GBK, Big5, ...), where `unzip` shows mojibake. The preview names that
+encoding (`zip, Shift_JIS names`), and `\` separates folders like `/`.
+
+zip archives using compression other than deflate, and the formats listed by external
+programs, are extracted by 7-Zip, unrar or bsdtar. Those never ask for a password: an
+encrypted archive fails with the program's message. Extractions run in the background,
+one at a time, with pastes and deletions, and the result is selected when done.
 
 ## Clipboard
 
@@ -556,7 +601,7 @@ Action names: `move_up`, `move_down`, `move_top`, `move_bottom`, `half_page_up`,
 `go_home`, `prompt_cd`, `prompt_z`, `toggle_hidden`, `toggle_metadata`, `rename`, `shell`,
 `search`, `search_next`, `search_prev`, `clear_search`, `mark_matches`, `sort name`,
 `sort size`, `sort mtime`, `sort ctime`, `copy`, `cut`, `paste`, `paste_overwrite`, `delete`,
-`trash`, `mkdir`, `touch`, `clear_buffer`, `yank_path`, `yank_dir`, `yank_name`,
+`trash`, `mkdir`, `touch`, `extract`, `clear_buffer`, `yank_path`, `yank_dir`, `yank_name`,
 `yank_name_without_ext`, `yank_file`, `reload`, `toggle_help`, `command_line`, `quit`.
 ## Architecture
 
@@ -583,6 +628,7 @@ with events.
 | `search.rs`   | Search patterns: wildcards, fuzzy matching and ranking             |
 | `clipboard.rs`| System clipboard through wl-copy, xclip, xsel or OSC 52            |
 | `fs/`         | Entries, listing, sort, metadata, file ops, trash (no UI types)    |
+| `archive/`    | Archive formats, listing and extraction, built in or via programs  |
 | `preview/`    | `Previewer` trait, registry, previewers, ANSI, thumbnail cache     |
 | `graphics.rs` | Encodes images for the terminal graphics protocol                  |
 | `vcs/`        | Git status via the `git` CLI, per-path and per-directory status    |

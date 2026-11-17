@@ -1144,7 +1144,7 @@ fn entries(
         detail,
         time,
       } => Some((number.clone(), title.clone(), detail.clone(), time.clone())),
-      tansu::preview::Row::Text(_) => None,
+      tansu::preview::Row::Text(_) | tansu::preview::Row::Member { .. } => None,
     })
     .collect()
 }

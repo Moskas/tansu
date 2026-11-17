@@ -194,7 +194,8 @@ pub fn sanitize(name: &str) -> String {
 pub fn class_for_extension(ext: &str) -> Option<FileClass> {
   let class = match ext {
     "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "txz" | "zst" | "7z" | "rar" | "lz" | "lzma"
-    | "lz4" | "cab" | "deb" | "rpm" | "iso" | "jar" | "apk" => FileClass::Archive,
+    | "lz4" | "cab" | "deb" | "rpm" | "iso" | "jar" | "apk" | "tbz" | "tbz2" | "tzst" | "cbr"
+    | "cb7" | "whl" | "xpi" | "war" | "cpio" | "xar" | "lzh" | "lha" | "arj" => FileClass::Archive,
     "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "ico" | "tif" | "tiff" | "avif"
     | "heic" | "jxl" | "xcf" | "psd" => FileClass::Image,
     "mp4" | "mkv" | "webm" | "avi" | "mov" | "wmv" | "flv" | "m4v" | "mpg" | "mpeg" => {

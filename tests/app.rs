@@ -2133,7 +2133,10 @@ fn every_way_of_deleting_asks() {
   assert!(app.confirm.is_some());
   press(&mut app, "n");
   app.run_command_line("trash");
-  assert!(app.confirm.as_ref().is_some_and(|c| c.trash));
+  assert!(app.confirm.as_ref().is_some_and(|c| matches!(
+    c.action,
+    tansu::app::ConfirmAction::Delete { trash: true, .. }
+  )));
   // A click answers no.
   mouse(
     &mut app,
@@ -2357,4 +2360,111 @@ fn cd_and_cz_open_the_command_line_for_cd_and_zoxide() {
 
   press(&mut app, "cz");
   assert_eq!(app.console.as_ref().unwrap().input(), "z ");
+}
+
+/// A zip in `dir` holding `notes/a.txt` and `notes/b.txt`.
+fn make_zip(dir: &Path, name: &str) {
+  use std::io::Write;
+  let mut zip = zip::ZipWriter::new(fs::File::create(dir.join(name)).unwrap());
+  for member in ["notes/a.txt", "notes/b.txt"] {
+    zip
+      .start_file(member, zip::write::SimpleFileOptions::default())
+      .unwrap();
+    zip.write_all(b"text\n").unwrap();
+  }
+  zip.finish().unwrap();
+}
+
+#[test]
+fn x_extracts_the_selected_archive_and_selects_the_result() {
+  let (_tmp, work) = fixture();
+  make_zip(&work, "bundle.zip");
+  let mut app = new_app(&work);
+  press(&mut app, "G");
+  while selected(&app) != "bundle.zip" {
+    press(&mut app, "k");
+  }
+  press(&mut app, "x");
+  assert_eq!(message(&app), "extracted bundle.zip to notes/");
+  assert_eq!(selected(&app), "notes");
+  assert!(work.join("notes/a.txt").is_file());
+
+  // Not an archive: nothing happens.
+  press(&mut app, "gg");
+  press(&mut app, "x");
+  assert_eq!(message(&app), "extract: alpha is not an archive");
+}
+
+#[test]
+fn x_with_marks_extracts_only_the_archives() {
+  let (_tmp, work) = fixture();
+  make_zip(&work, "one.zip");
+  make_zip(&work, "two.zip");
+  let mut app = new_app(&work);
+  press(&mut app, "v");
+  let marked = app.selection().len();
+  // Without pumping, to see the message before the extraction finishes.
+  app.handle_key(tansu::keymap::parse_sequence("x").unwrap()[0]);
+  assert_eq!(
+    message(&app),
+    format!(
+      "extracting 2 items (skipping {} items that are not archives)",
+      marked - 2
+    )
+  );
+  pump(&mut app);
+  assert_eq!(message(&app), "extracted 2 items");
+  // Both hold the same folder: the second gets a suffix.
+  assert!(work.join("notes/a.txt").is_file());
+  assert!(work.join("notes_/b.txt").is_file());
+}
+
+#[test]
+fn x_on_a_damaged_archive_asks_to_extract_the_rest() {
+  let (_tmp, work) = fixture();
+  let damaged = |name: &str| {
+    use std::io::Write;
+    let path = work.join(name);
+    let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+    let stored =
+      zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for (member, data) in [("album/01.flac", "GOOD"), ("album/02.flac", "BAD!")] {
+      zip.start_file(member, stored).unwrap();
+      zip.write_all(data.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap();
+    let mut bytes = fs::read(&path).unwrap();
+    let at = bytes.windows(4).position(|w| w == b"BAD!").unwrap();
+    bytes[at] = b'X';
+    fs::write(&path, bytes).unwrap();
+  };
+  damaged("album.zip");
+  let mut app = new_app(&work);
+  press(&mut app, "G");
+  while selected(&app) != "album.zip" {
+    press(&mut app, "k");
+  }
+  press(&mut app, "x");
+  let confirm = app.confirm.clone().expect("asks about the damaged file");
+  assert_eq!(confirm.names, ["album/02.flac"]);
+  assert_eq!(
+    confirm.question(),
+    "`album.zip` has 1 damaged file. Extract the rest? (y/N)"
+  );
+  assert!(!work.join("album").exists());
+
+  // Any other key aborts.
+  press(&mut app, "n");
+  assert!(app.confirm.is_none());
+  assert!(!work.join("album").exists());
+
+  press(&mut app, "x");
+  press(&mut app, "y");
+  assert_eq!(
+    message(&app),
+    "extracted album.zip to album/, skipped 1 damaged file"
+  );
+  assert_eq!(selected(&app), "album");
+  assert!(work.join("album/01.flac").is_file());
+  assert!(!work.join("album/02.flac").exists());
 }

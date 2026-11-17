@@ -1,5 +1,6 @@
-//! The list of entries a pending deletion would remove, drawn above the status bar while
-//! the question there waits for an answer.
+//! The list of entries a pending question is about (what a deletion would remove, or the
+//! damaged files of an archive), drawn above the status bar while the question there
+//! waits for an answer.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -31,19 +32,14 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App) {
   let height = rows as u16 + 1;
   let area = Rect::new(body.x, body.bottom() - height, body.width, height);
   Clear.render(area, buf);
-  let title = if confirm.trash {
-    " Move to the trash "
-  } else {
-    " Delete permanently, directories with their contents "
-  };
-  let color = if confirm.trash {
-    theme.border.0
-  } else {
+  let color = if confirm.is_warning() {
     theme.error.0
+  } else {
+    theme.border.0
   };
   let block = Block::new()
     .borders(Borders::TOP)
-    .title(title)
+    .title(confirm.title())
     .border_style(Style::new().fg(color));
   let inner = block.inner(area);
   block.render(area, buf);

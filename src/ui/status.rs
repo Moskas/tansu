@@ -26,10 +26,10 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App) {
     return;
   }
   if let Some(confirm) = &app.confirm {
-    let color = if confirm.trash {
-      theme.status_fg.0
-    } else {
+    let color = if confirm.is_warning() {
       theme.error.0
+    } else {
+      theme.status_fg.0
     };
     let style = Style::new().fg(color).add_modifier(Modifier::BOLD);
     Line::styled(confirm.question(), style).render(area, buf);

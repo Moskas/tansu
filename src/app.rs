@@ -101,6 +101,13 @@ pub enum Command {
     paths: Vec<PathBuf>,
     trash: Option<PathBuf>,
   },
+  /// Extract each of `archives` into the directory `dest`; with `skip_damaged`, without
+  /// their damaged members.
+  Extract {
+    archives: Vec<PathBuf>,
+    dest: PathBuf,
+    skip_damaged: bool,
+  },
   /// Create a directory (`dir`) or an empty file, with missing parents.
   Create {
     path: PathBuf,
@@ -186,30 +193,81 @@ struct CachedPreview {
   level: u32,
 }
 
-/// A deletion waiting for the user to confirm it with `y`.
+/// A question waiting for the user to answer it with `y`; any other key says no.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Confirm {
-  /// Move to the trash instead of deleting for good.
-  pub trash: bool,
-  /// What will be deleted, fixed when the deletion was asked for, so nothing that happens
-  /// before the answer (a reload, a moved cursor) changes it.
-  pub paths: Vec<PathBuf>,
-  /// The names to list, directories ending in `/` (they go with their contents).
+  pub action: ConfirmAction,
+  /// The names to list above the question.
   pub names: Vec<String>,
+}
+
+/// What a `y` does. Fixed when the question was asked, so nothing that happens before the
+/// answer (a reload, a moved cursor) changes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfirmAction {
+  /// Delete these paths, or move them to the trash. Directories are listed ending in `/`
+  /// (they go with their contents).
+  Delete { trash: bool, paths: Vec<PathBuf> },
+  /// Extract these archives into `dest` without their damaged members (`damaged` of them,
+  /// which are listed).
+  ExtractDamaged {
+    archives: Vec<PathBuf>,
+    dest: PathBuf,
+    damaged: usize,
+  },
 }
 
 impl Confirm {
   /// The question shown in the status bar.
   pub fn question(&self) -> String {
-    let what = match self.paths.as_slice() {
-      [one] => format!("`{}`", display_name(one)),
-      many => items(many.len()),
-    };
-    if self.trash {
-      format!("Move {what} to the trash? (y/N)")
-    } else {
-      format!("Delete {what} permanently? (y/N)")
+    match &self.action {
+      ConfirmAction::Delete { trash, paths } => {
+        let what = match paths.as_slice() {
+          [one] => format!("`{}`", display_name(one)),
+          many => items(many.len()),
+        };
+        if *trash {
+          format!("Move {what} to the trash? (y/N)")
+        } else {
+          format!("Delete {what} permanently? (y/N)")
+        }
+      }
+      ConfirmAction::ExtractDamaged {
+        archives, damaged, ..
+      } => {
+        let files = if *damaged == 1 {
+          "1 damaged file".to_string()
+        } else {
+          format!("{damaged} damaged files")
+        };
+        match archives.as_slice() {
+          [one] => format!(
+            "`{}` has {files}. Extract the rest? (y/N)",
+            display_name(one)
+          ),
+          many => format!(
+            "{} archives have {files}. Extract the rest? (y/N)",
+            many.len()
+          ),
+        }
+      }
     }
+  }
+
+  /// The title of the list above the question.
+  pub fn title(&self) -> &'static str {
+    match self.action {
+      ConfirmAction::Delete { trash: true, .. } => " Move to the trash ",
+      ConfirmAction::Delete { trash: false, .. } => {
+        " Delete permanently, directories with their contents "
+      }
+      ConfirmAction::ExtractDamaged { .. } => " Damaged: their data fails its checksum ",
+    }
+  }
+
+  /// Whether to draw the question as a warning: something is lost or broken.
+  pub fn is_warning(&self) -> bool {
+    !matches!(self.action, ConfirmAction::Delete { trash: true, .. })
   }
 }
 
@@ -563,6 +621,7 @@ impl App {
       } => self.on_pasted(dest, mode, results),
       Event::Deleted { trashed, results } => self.on_deleted(trashed, results),
       Event::Created { path, dir, result } => self.on_created(path, dir, result),
+      Event::Extracted { dest, results } => self.on_extracted(dest, results),
       Event::Clipboard(result) => {
         if let Err(e) = result {
           self.set_error(e);
@@ -590,7 +649,7 @@ impl App {
     // Answered before the keymap sees the key: `y` also starts the yank bindings.
     if let Some(confirm) = self.confirm.take() {
       if key.code == KeyCode::Char('y') && key.mods.is_empty() {
-        self.run_delete(confirm);
+        self.run_confirmed(confirm.action);
       } else {
         self.set_info("cancelled");
       }
@@ -1216,15 +1275,29 @@ impl App {
       .collect();
     self.keymap.reset();
     self.confirm = Some(Confirm {
-      trash,
-      paths,
+      action: ConfirmAction::Delete { trash, paths },
       names,
     });
   }
 
+  /// Carries out what a question was answered `y` to.
+  fn run_confirmed(&mut self, action: ConfirmAction) {
+    match action {
+      ConfirmAction::Delete { trash, paths } => self.run_delete(trash, paths),
+      ConfirmAction::ExtractDamaged { archives, dest, .. } => {
+        self.set_info(format!("extracting the rest of {}", items(archives.len())));
+        self.commands.push(Command::Extract {
+          archives,
+          dest,
+          skip_damaged: true,
+        });
+      }
+    }
+  }
+
   /// Carries out a confirmed deletion.
-  fn run_delete(&mut self, confirm: Confirm) {
-    let trash = if confirm.trash {
+  fn run_delete(&mut self, to_trash: bool, paths: Vec<PathBuf>) {
+    let trash = if to_trash {
       match &self.trash_dir {
         Some(dir) => Some(dir.clone()),
         None => {
@@ -1235,16 +1308,9 @@ impl App {
     } else {
       None
     };
-    let verb = if confirm.trash {
-      "trashing"
-    } else {
-      "deleting"
-    };
-    self.set_info(format!("{verb} {}", items(confirm.paths.len())));
-    self.commands.push(Command::Delete {
-      paths: confirm.paths,
-      trash,
-    });
+    let verb = if to_trash { "trashing" } else { "deleting" };
+    self.set_info(format!("{verb} {}", items(paths.len())));
+    self.commands.push(Command::Delete { paths, trash });
   }
 
   fn on_deleted(&mut self, trashed: bool, results: Vec<(PathBuf, Result<(), String>)>) {
@@ -1332,6 +1398,149 @@ impl App {
     }
     self.vcs_force.insert(cwd.clone());
     self.request_dir(&cwd, true);
+  }
+
+  /// `x`: extracts the marked archives (or the selected one) into the current directory.
+  /// Marked entries that are not archives are left alone.
+  fn extract(&mut self) {
+    let selection = self.selection();
+    let selected = selection.len();
+    let first = selection.first().map(|e| e.name.clone());
+    let archives: Vec<(String, PathBuf)> = selection
+      .into_iter()
+      .filter(|e| {
+        e.kind == crate::fs::EntryKind::File && crate::archive::Format::from_name(&e.name).is_some()
+      })
+      .map(|e| (e.name.clone(), e.path.clone()))
+      .collect();
+    let what = match (selected, archives.as_slice()) {
+      (0, _) => {
+        self.set_error("nothing selected");
+        return;
+      }
+      (1, []) => {
+        let name = first.unwrap_or_default();
+        self.set_error(format!("extract: {name} is not an archive"));
+        return;
+      }
+      (_, []) => {
+        self.set_error("extract: no archives marked");
+        return;
+      }
+      (_, [(name, _)]) => name.clone(),
+      (_, many) => items(many.len()),
+    };
+    let skipped = selected - archives.len();
+    let note = if skipped > 0 {
+      format!(" (skipping {} that are not archives)", items(skipped))
+    } else {
+      String::new()
+    };
+    let archives = archives.into_iter().map(|(_, path)| path).collect();
+    self.set_info(format!("extracting {what}{note}"));
+    self.commands.push(Command::Extract {
+      archives,
+      dest: self.cwd.clone(),
+      skip_damaged: false,
+    });
+  }
+
+  /// Reports extractions. Archives with damaged members were not extracted; they lead to
+  /// a question whether to extract the rest of them.
+  fn on_extracted(
+    &mut self,
+    dest: PathBuf,
+    results: Vec<(
+      PathBuf,
+      Result<crate::archive::Extracted, crate::archive::ExtractError>,
+    )>,
+  ) {
+    use crate::archive::ExtractError;
+    let mut done = Vec::new();
+    let mut skipped = 0;
+    let mut errors = Vec::new();
+    let mut damaged = Vec::new();
+    for (archive, result) in results {
+      match result {
+        Ok(extracted) => {
+          let target = extracted.path;
+          let stale = |p: &PathBuf| p.starts_with(&target);
+          self.dirs.retain(|p, _| !stale(p));
+          self.counts.retain(|p, _| !stale(p));
+          self.preview_cache.retain(|p, _| !stale(p));
+          skipped += extracted.skipped.len();
+          done.push((archive, target));
+        }
+        Err(ExtractError::Damaged { members, .. }) => damaged.push((archive, members)),
+        Err(ExtractError::Failed(e)) => errors.push(e),
+      }
+    }
+    let note = match skipped {
+      0 => String::new(),
+      1 => ", skipped 1 damaged file".to_string(),
+      n => format!(", skipped {n} damaged files"),
+    };
+    match (errors.as_slice(), done.as_slice()) {
+      ([first, rest @ ..], _) => {
+        let more = if rest.is_empty() {
+          String::new()
+        } else {
+          format!(" (+{} more)", rest.len())
+        };
+        self.set_error(format!("{first}{more}"));
+      }
+      ([], []) => {}
+      ([], [(archive, target)]) => {
+        let mut to = display_name(target);
+        if target.is_dir() {
+          to.push('/');
+        }
+        let text = format!("extracted {} to {to}{note}", display_name(archive));
+        if skipped > 0 {
+          self.set_error(text);
+        } else {
+          self.set_info(text);
+        }
+      }
+      ([], many) if skipped > 0 => {
+        self.set_error(format!("extracted {}{note}", items(many.len())));
+      }
+      ([], many) => self.set_info(format!("extracted {}", items(many.len()))),
+    }
+    if !damaged.is_empty() {
+      let several = damaged.len() > 1;
+      let names = damaged
+        .iter()
+        .flat_map(|(archive, members)| {
+          let prefix = if several {
+            format!("{}: ", display_name(archive))
+          } else {
+            String::new()
+          };
+          members
+            .iter()
+            .map(move |m| format!("{prefix}{}", crate::fs::entry::sanitize(m)))
+        })
+        .collect::<Vec<_>>();
+      self.keymap.reset();
+      self.confirm = Some(Confirm {
+        action: ConfirmAction::ExtractDamaged {
+          archives: damaged.into_iter().map(|(a, _)| a).collect(),
+          dest: dest.clone(),
+          damaged: names.len(),
+        },
+        names,
+      });
+    }
+    if let Some(name) = done.first().and_then(|(_, t)| t.file_name()) {
+      let name = crate::fs::entry::sanitize(&name.to_string_lossy());
+      self.remembered.insert(dest.clone(), name.clone());
+      self.select_after_load = Some((dest.clone(), name));
+    }
+    if dest == self.cwd || self.dirs.contains_key(&dest) {
+      self.vcs_force.insert(dest.clone());
+      self.request_dir(&dest, true);
+    }
   }
 
   fn on_pasted(
@@ -1563,6 +1772,7 @@ impl App {
       Action::Trash => self.ask_delete(true),
       Action::MakeDir => self.prompt(console::MKDIR),
       Action::Touch => self.prompt(console::TOUCH),
+      Action::Extract => self.extract(),
       Action::ClearBuffer => {
         self.buffer = None;
         self.set_info("buffer cleared");

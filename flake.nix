@@ -31,6 +31,7 @@
           ffmpeg-headless # ffprobe (video and audio details) and ffmpeg (frames, covers)
           ffmpegthumbnailer # video frames
           poppler-utils # pdftoppm (PDF pages) and pdfinfo (PDF details)
+          libarchive # bsdtar (7z, rar, iso and other archives); unrar is unfree, so left out
         ];
 
         tansu-unwrapped = naersk'.buildPackage {

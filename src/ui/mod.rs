@@ -55,19 +55,8 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App) {
 /// Foreground style for an entry based on its type.
 pub fn entry_style(entry: &Entry, theme: &Theme) -> Style {
   let color = match entry.class() {
-    FileClass::Dir if entry.is_symlink() => theme.symlink,
-    FileClass::Dir => theme.directory,
-    FileClass::BrokenLink => theme.broken_link,
-    _ if entry.is_symlink() => theme.symlink,
-    FileClass::Executable => theme.executable,
-    FileClass::Archive => theme.archive,
-    FileClass::Image => theme.image,
-    FileClass::Video => theme.video,
-    FileClass::Audio => theme.audio,
-    FileClass::Document => theme.document,
-    FileClass::Code => theme.code,
-    FileClass::Special => theme.special,
-    FileClass::Text | FileClass::Other => theme.file,
+    _ if entry.is_symlink() && entry.class() != FileClass::BrokenLink => theme.symlink,
+    class => class_color(class, theme),
   };
   // Ranger makes executables, sockets and devices bold (directories are kept regular).
   let bold = match entry.kind {
@@ -80,5 +69,22 @@ pub fn entry_style(entry: &Entry, theme: &Theme) -> Style {
     style.add_modifier(Modifier::BOLD)
   } else {
     style
+  }
+}
+
+/// The theme color for a kind of file.
+pub fn class_color(class: FileClass, theme: &Theme) -> crate::config::ThemeColor {
+  match class {
+    FileClass::Dir => theme.directory,
+    FileClass::BrokenLink => theme.broken_link,
+    FileClass::Executable => theme.executable,
+    FileClass::Archive => theme.archive,
+    FileClass::Image => theme.image,
+    FileClass::Video => theme.video,
+    FileClass::Audio => theme.audio,
+    FileClass::Document => theme.document,
+    FileClass::Code => theme.code,
+    FileClass::Special => theme.special,
+    FileClass::Text | FileClass::Other => theme.file,
   }
 }

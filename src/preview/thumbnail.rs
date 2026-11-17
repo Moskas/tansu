@@ -43,8 +43,17 @@ pub fn run(
   args: &[&OsStr],
   ctx: &PreviewContext,
 ) -> Result<Option<Output>, PreviewError> {
-  let mut child = match Command::new(program)
-    .args(args)
+  let mut command = Command::new(program);
+  command.args(args);
+  run_command(command, ctx.cancelled)
+}
+
+/// [`run`] for a prepared command, which may set environment variables or a directory.
+pub fn run_command(
+  mut command: Command,
+  cancelled: &dyn Fn() -> bool,
+) -> Result<Option<Output>, PreviewError> {
+  let mut child = match command
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
     .stderr(Stdio::null())
@@ -64,7 +73,7 @@ pub fn run(
   });
   let started = Instant::now();
   let status = loop {
-    if (ctx.cancelled)() {
+    if cancelled() {
       let _ = child.kill();
       let _ = child.wait();
       let _ = reader.join();

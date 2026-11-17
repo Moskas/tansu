@@ -8,9 +8,11 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Widget};
 
 use super::text::{display_width, truncate};
-use super::{entry_style, icons, layout};
+use super::{class_color, entry_style, icons, layout};
 use crate::app::{App, DirState, PreviewStatus};
+use crate::archive::MemberKind;
 use crate::config::Theme;
+use crate::fs::entry::class_for_extension;
 use crate::fs::meta::human_size;
 use crate::fs::{Entry, EntryKind, FileClass};
 use crate::nav::passive_offset;
@@ -281,10 +283,28 @@ fn draw_listing(buf: &mut Buffer, area: Rect, listing: &Listing, skip: usize, th
     .iter()
     .filter_map(|r| match r {
       Row::Entry { number, .. } => Some(display_width(number)),
-      Row::Text(_) => None,
+      Row::Text(_) | Row::Member { .. } => None,
     })
     .max()
     .unwrap_or(0);
+  let widest = |field: fn(&Row) -> Option<&String>| {
+    listing
+      .rows
+      .iter()
+      .filter_map(|r| field(r).map(|s| display_width(s)))
+      .max()
+      .unwrap_or(0)
+  };
+  let member_columns = MemberColumns {
+    size: widest(|r| match r {
+      Row::Member { size, .. } => size.as_ref(),
+      _ => None,
+    }),
+    date: widest(|r| match r {
+      Row::Member { modified, .. } => modified.as_ref(),
+      _ => None,
+    }),
+  };
   let has_rule = !listing.info.is_empty() && !listing.rows.is_empty();
   let dim = Style::new().fg(theme.dim.0);
   let fg = Style::new().fg(theme.fg.0);
@@ -309,6 +329,33 @@ fn draw_listing(buf: &mut Buffer, area: Rect, listing: &Listing, skip: usize, th
       None => break,
       Some(Row::Text(text)) => {
         buf.set_stringn(line.x, line.y, text, width, fg);
+      }
+      Some(Row::Member {
+        name,
+        kind,
+        size,
+        modified,
+      }) => {
+        let color = match kind {
+          MemberKind::Dir => theme.directory,
+          MemberKind::Link => theme.symlink,
+          MemberKind::Other => theme.special,
+          MemberKind::File => {
+            let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+            let class = ext.as_deref().and_then(class_for_extension);
+            class_color(class.unwrap_or(FileClass::Other), theme)
+          }
+        };
+        draw_member(
+          buf,
+          line,
+          name,
+          Style::new().fg(color.0),
+          size.as_deref(),
+          modified.as_deref(),
+          member_columns,
+          dim,
+        );
       }
       Some(Row::Entry {
         number,
@@ -343,6 +390,57 @@ fn draw_listing(buf: &mut Buffer, area: Rect, listing: &Listing, skip: usize, th
         }
       }
     }
+  }
+}
+
+/// Widths of the date and size columns of archive members.
+#[derive(Clone, Copy)]
+struct MemberColumns {
+  size: usize,
+  date: usize,
+}
+
+/// Columns given up, date first, when the name would get less than this.
+const MIN_MEMBER_NAME: usize = 16;
+
+/// `path      2024-01-02 10:00   12 k`: the name, then the date and size flush right.
+#[allow(clippy::too_many_arguments)]
+fn draw_member(
+  buf: &mut Buffer,
+  line: Rect,
+  name: &str,
+  style: Style,
+  size: Option<&str>,
+  date: Option<&str>,
+  columns: MemberColumns,
+  dim: Style,
+) {
+  let width = line.width as usize;
+  let size_w = if columns.size > 0 {
+    columns.size + 1
+  } else {
+    0
+  };
+  let date_w = if columns.date > 0 {
+    columns.date + 2
+  } else {
+    0
+  };
+  let (show_size, show_date) = if width >= MIN_MEMBER_NAME + size_w + date_w {
+    (true, true)
+  } else {
+    (width >= MIN_MEMBER_NAME + size_w, false)
+  };
+  let right = if show_size { size_w } else { 0 } + if show_date { date_w } else { 0 };
+  let room = width - right;
+  buf.set_stringn(line.x, line.y, truncate(name, room), room, style);
+  if show_size && let Some(size) = size {
+    let x = line.right() - display_width(size) as u16;
+    buf.set_stringn(x, line.y, size, display_width(size), dim);
+  }
+  if show_date && let Some(date) = date {
+    let x = line.right() - (size_w + columns.date) as u16;
+    buf.set_stringn(x, line.y, date, columns.date, dim);
   }
 }
 

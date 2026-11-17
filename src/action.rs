@@ -37,6 +37,7 @@ pub enum Action {
   Trash,
   MakeDir,
   Touch,
+  Extract,
   ClearBuffer,
   YankPath,
   YankDir,
@@ -56,7 +57,7 @@ pub enum Action {
 }
 
 impl Action {
-  pub const ALL: [Action; 49] = [
+  pub const ALL: [Action; 50] = [
     Action::MoveUp,
     Action::MoveDown,
     Action::MoveTop,
@@ -90,6 +91,7 @@ impl Action {
     Action::Trash,
     Action::MakeDir,
     Action::Touch,
+    Action::Extract,
     Action::ClearBuffer,
     Action::YankPath,
     Action::YankDir,
@@ -144,6 +146,7 @@ impl Action {
       Action::Trash => "trash",
       Action::MakeDir => "mkdir",
       Action::Touch => "touch",
+      Action::Extract => "extract",
       Action::ClearBuffer => "clear_buffer",
       Action::YankPath => "yank_path",
       Action::YankDir => "yank_dir",
@@ -198,6 +201,7 @@ impl Action {
       Action::Trash => "Move the marked entries (or selection) to the trash",
       Action::MakeDir => "Create a directory",
       Action::Touch => "Create an empty file",
+      Action::Extract => "Extract the marked archives (or selection) here",
       Action::ClearBuffer => "Clear the copy/cut buffer",
       Action::YankPath => "Yank the selection's path",
       Action::YankDir => "Yank the current directory's path",

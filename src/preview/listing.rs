@@ -45,6 +45,13 @@ pub enum Row {
   },
   /// A line of text, as in the file.
   Text(String),
+  /// An archive member: `path      date    size`, with the date and size in columns.
+  Member {
+    name: String,
+    kind: crate::archive::MemberKind,
+    size: Option<String>,
+    modified: Option<String>,
+  },
 }
 
 pub struct ListingPreviewer;
@@ -93,7 +100,7 @@ impl Previewer for ListingPreviewer {
 }
 
 /// Makes every string safe to draw: tabs expanded, control characters replaced.
-fn clean(mut listing: Listing) -> Listing {
+pub(super) fn clean(mut listing: Listing) -> Listing {
   let clean = |s: &mut String| *s = super::text::clean_line(s);
   for (key, value) in &mut listing.info {
     clean(key);
@@ -112,6 +119,16 @@ fn clean(mut listing: Listing) -> Listing {
         clean(title);
         detail.iter_mut().for_each(clean);
         time.iter_mut().for_each(clean);
+      }
+      Row::Member {
+        name,
+        size,
+        modified,
+        ..
+      } => {
+        clean(name);
+        size.iter_mut().for_each(clean);
+        modified.iter_mut().for_each(clean);
       }
     }
   }
