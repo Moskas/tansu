@@ -96,10 +96,19 @@ cargo test
 | `~`                         | Go to home directory          |
 | `.`                         | Toggle hidden files           |
 | `i`                         | Toggle file metadata / preview|
+| `on`                        | Sort by name                  |
+| `os`                        | Sort by size, largest first   |
+| `om`                        | Sort by modification time     |
+| `oc`                        | Sort by change time           |
 | `r`                         | Reload directory              |
 | `?`                         | Toggle help overlay           |
 | `:`                         | Open the command line         |
 | `q`, `<C-c>`                | Quit                          |
+
+Directories are always listed before files; the sort order applies within each group. Time
+sorts put the newest entries first. Sorting by size orders files only, since a directory's own
+size says nothing about its contents; directories stay in name order. Changing the order
+keeps the selected entry under the cursor and applies to every column.
 
 Files are opened with the configured opener (default `xdg-open`), detached from the
 terminal so tansu stays usable.
@@ -115,6 +124,7 @@ or `<C-c>` cancels, and `<BS>` on an empty line closes it. Editing keys: `<Left>
 |------------------------------------|------------------------------------------------------|
 | `open_with <program> [args...]`    | Run the program on the selection in the foreground   |
 | `open_with -d <program> [args...]` | Run the program on the selection, detached           |
+| `sort <type>`                      | Sort by `name`, `size`, `mtime` or `ctime`           |
 | `<action>`                         | Any action name below, e.g. `open`, `reload`, `quit` |
 | `q`                                | Quit                                                 |
 
@@ -136,6 +146,10 @@ bindings, and the error is shown in the status line.
 ```toml
 # Show dotfiles on startup.
 show_hidden = false
+
+# Initial sort order: "name" (natural, case-insensitive), "size", "mtime" or "ctime".
+# Directories always come first.
+sort = "name"
 
 # Nerd Font icons; false switches to ASCII markers.
 icons = true
@@ -219,12 +233,13 @@ vcs_commit = "#fabd2f"
 "<C-n>" = "move_down"
 "<C-p>" = "move_up"
 "<BS>" = "none"
+"ot" = "sort mtime"
 ```
 
 Action names: `move_up`, `move_down`, `move_top`, `move_bottom`, `half_page_up`,
 `half_page_down`, `page_up`, `page_down`, `go_parent`, `open`, `go_home`, `toggle_hidden`,
-`toggle_metadata`,
-`reload`, `toggle_help`, `command_line`, `quit`.
+`toggle_metadata`, `sort name`, `sort size`, `sort mtime`, `sort ctime`, `reload`, `toggle_help`,
+`command_line`, `quit`.
 
 ## Architecture
 

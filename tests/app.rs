@@ -748,3 +748,99 @@ fn command_line_is_drawn_in_the_status_row() {
     .backend_mut()
     .assert_cursor_position((15, HEIGHT - 1));
 }
+
+fn set_mtime(path: &Path, secs: u64) {
+  let time = std::time::UNIX_EPOCH + Duration::from_secs(secs);
+  fs::File::open(path).unwrap().set_modified(time).unwrap();
+}
+
+#[test]
+fn sort_keys_keep_directories_first_and_the_selection() {
+  let (_tmp, work) = fixture();
+  set_mtime(&work.join("alpha"), 100);
+  set_mtime(&work.join("beta"), 200);
+  set_mtime(&work.join("blob.bin"), 300);
+  set_mtime(&work.join("file2.txt"), 500);
+  set_mtime(&work.join("file10.txt"), 400);
+  set_mtime(&work.join("好きな歌のタイトル.mp3"), 100);
+  let mut app = new_app(&work);
+  press(&mut app, "jjj");
+  assert_eq!(selected(&app), "file2.txt");
+
+  press(&mut app, "os");
+  assert_eq!(
+    names(&app),
+    vec![
+      "alpha",
+      "beta",
+      "好きな歌のタイトル.mp3",
+      "file10.txt",
+      "blob.bin",
+      "file2.txt"
+    ]
+  );
+  assert_eq!(selected(&app), "file2.txt");
+  assert_eq!(app.message.as_ref().unwrap().text, "sorted by size");
+
+  press(&mut app, "om");
+  assert_eq!(
+    names(&app),
+    vec![
+      "beta",
+      "alpha",
+      "file2.txt",
+      "file10.txt",
+      "blob.bin",
+      "好きな歌のタイトル.mp3"
+    ]
+  );
+  assert_eq!(selected(&app), "file2.txt");
+
+  press(&mut app, ":sort name<Enter>");
+  assert_eq!(
+    names(&app),
+    vec![
+      "alpha",
+      "beta",
+      "blob.bin",
+      "file2.txt",
+      "file10.txt",
+      "好きな歌のタイトル.mp3"
+    ]
+  );
+}
+
+#[test]
+fn sort_order_applies_to_listings_loaded_later() {
+  let (_tmp, work) = fixture();
+  fs::write(work.join("alpha/a.txt"), "a much longer file\n").unwrap();
+  let mut app = new_app(&work);
+  press(&mut app, "os");
+  press(&mut app, "l");
+  assert_eq!(names(&app), vec!["a.txt", "b.txt"]);
+  fs::write(work.join("alpha/b.txt"), "an even longer file than a\n").unwrap();
+  press(&mut app, "r");
+  assert_eq!(names(&app), vec!["b.txt", "a.txt"]);
+}
+
+#[test]
+fn config_sets_the_initial_sort_order() {
+  let (_tmp, work) = fixture();
+  let config = Config {
+    icons: false,
+    vcs_aware: false,
+    sort: tansu::fs::SortKey::Size,
+    ..Config::default()
+  };
+  let mut app = App::new(
+    config,
+    Keymap::default(),
+    work.clone(),
+    None,
+    "tester@box".to_string(),
+    None,
+  );
+  app.set_size(WIDTH, HEIGHT);
+  pump(&mut app);
+  assert_eq!(names(&app)[2], "好きな歌のタイトル.mp3");
+}

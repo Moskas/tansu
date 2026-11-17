@@ -1,6 +1,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::fs::SortKey;
+
 /// Everything the user can ask the application to do. Keys are mapped to actions through the
 /// keymap; the app only ever reacts to actions, never to raw keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -18,6 +20,7 @@ pub enum Action {
   GoHome,
   ToggleHidden,
   ToggleMetadata,
+  Sort(SortKey),
   Reload,
   ToggleHelp,
   CommandLine,
@@ -25,7 +28,7 @@ pub enum Action {
 }
 
 impl Action {
-  pub const ALL: [Action; 17] = [
+  pub const ALL: [Action; 21] = [
     Action::MoveUp,
     Action::MoveDown,
     Action::MoveTop,
@@ -39,13 +42,17 @@ impl Action {
     Action::GoHome,
     Action::ToggleHidden,
     Action::ToggleMetadata,
+    Action::Sort(SortKey::Name),
+    Action::Sort(SortKey::Size),
+    Action::Sort(SortKey::Mtime),
+    Action::Sort(SortKey::Ctime),
     Action::Reload,
     Action::ToggleHelp,
     Action::CommandLine,
     Action::Quit,
   ];
 
-  /// Stable identifier used in the config file.
+  /// Stable identifier used in the config file. It is also a valid command line.
   pub fn name(self) -> &'static str {
     match self {
       Action::MoveUp => "move_up",
@@ -61,6 +68,10 @@ impl Action {
       Action::GoHome => "go_home",
       Action::ToggleHidden => "toggle_hidden",
       Action::ToggleMetadata => "toggle_metadata",
+      Action::Sort(SortKey::Name) => "sort name",
+      Action::Sort(SortKey::Size) => "sort size",
+      Action::Sort(SortKey::Mtime) => "sort mtime",
+      Action::Sort(SortKey::Ctime) => "sort ctime",
       Action::Reload => "reload",
       Action::ToggleHelp => "toggle_help",
       Action::CommandLine => "command_line",
@@ -83,6 +94,10 @@ impl Action {
       Action::GoHome => "Go to home directory",
       Action::ToggleHidden => "Toggle hidden files",
       Action::ToggleMetadata => "Toggle file metadata / preview",
+      Action::Sort(SortKey::Name) => "Sort by name",
+      Action::Sort(SortKey::Size) => "Sort by size, largest first",
+      Action::Sort(SortKey::Mtime) => "Sort by modification time, newest first",
+      Action::Sort(SortKey::Ctime) => "Sort by change time, newest first",
       Action::Reload => "Reload directory",
       Action::ToggleHelp => "Toggle this help",
       Action::CommandLine => "Open the command line",

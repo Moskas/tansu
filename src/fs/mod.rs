@@ -8,3 +8,4 @@ pub mod sort;
 
 pub use entry::{DirCount, Entry, EntryKind, FileClass};
 pub use listing::{DirListing, ListError, count_entries, list_dir};
+pub use sort::SortKey;

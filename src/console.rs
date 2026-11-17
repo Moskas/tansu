@@ -3,6 +3,7 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::action::Action;
+use crate::fs::SortKey;
 use crate::keymap::Key;
 
 /// What a key press did to the command line.
@@ -171,12 +172,19 @@ pub enum ConsoleError {
   Unknown(String),
   #[error("{0}: missing program")]
   MissingProgram(&'static str),
+  #[error("sort: missing sort type (name, size, mtime, ctime)")]
+  MissingSortKey,
+  #[error("sort: unknown sort type `{0}`")]
+  UnknownSortKey(String),
   #[error("{command}: unexpected argument `{arg}`")]
   UnexpectedArgument { command: String, arg: String },
 }
 
 /// Name of the command that runs a program on the selection.
 pub const OPEN_WITH: &str = "open_with";
+
+/// Name of the command that changes the sort order, followed by a sort type.
+pub const SORT: &str = "sort";
 
 /// Flag of `open_with` that detaches the program instead of suspending tansu for it.
 pub const DETACH_FLAG: &str = "-d";
@@ -208,6 +216,13 @@ fn parse_words<'a>(
   }
   let action = match name {
     "q" => Action::Quit,
+    SORT => {
+      let key = args.next().ok_or(ConsoleError::MissingSortKey)?;
+      let key = key
+        .parse::<SortKey>()
+        .map_err(|_| ConsoleError::UnknownSortKey(key.to_string()))?;
+      Action::Sort(key)
+    }
     other => other
       .parse::<Action>()
       .map_err(|_| ConsoleError::Unknown(other.to_string()))?,

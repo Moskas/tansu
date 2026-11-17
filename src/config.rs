@@ -8,6 +8,7 @@ use std::str::FromStr;
 use ratatui::style::Color;
 use serde::{Deserialize, Deserializer};
 
+use crate::fs::SortKey;
 use crate::preview::{HighlightConfig, PreviewLimits};
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -15,6 +16,8 @@ use crate::preview::{HighlightConfig, PreviewLimits};
 pub struct Config {
   /// Show dotfiles on startup.
   pub show_hidden: bool,
+  /// Initial sort order: `name`, `size`, `mtime` or `ctime`. Directories always come first.
+  pub sort: SortKey,
   /// Nerd Font icons when true, ASCII markers when false.
   pub icons: bool,
   /// Command used to open files; the path is appended as the last argument.
@@ -43,6 +46,7 @@ impl Default for Config {
   fn default() -> Self {
     Config {
       show_hidden: false,
+      sort: SortKey::Name,
       icons: true,
       opener: "xdg-open".to_string(),
       column_ratios: [1, 3, 4],

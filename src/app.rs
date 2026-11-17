@@ -12,7 +12,8 @@ use crate::action::Action;
 use crate::config::Config;
 use crate::console::{self, ConsoleCommand, EditOutcome, LineEditor};
 use crate::event::Event;
-use crate::fs::{DirCount, DirListing, Entry};
+use crate::fs::sort::sort_entries_by;
+use crate::fs::{DirCount, DirListing, Entry, SortKey};
 use crate::graphics::EncodedImage;
 use crate::keymap::{Key, KeyResult, Keymap};
 use crate::nav::{Cursor, ScrollPos};
@@ -115,6 +116,8 @@ pub struct App {
   pub home: Option<PathBuf>,
   pub cwd: PathBuf,
   pub show_hidden: bool,
+  /// Order of entries in every listing; directories always come first.
+  pub sort: SortKey,
   pub show_help: bool,
   /// The `:` command line, while it is open.
   pub console: Option<LineEditor>,
@@ -157,6 +160,7 @@ impl App {
   ) -> Self {
     let mut app = App {
       show_hidden: config.show_hidden,
+      sort: config.sort,
       config,
       keymap,
       user_host,
@@ -478,6 +482,7 @@ impl App {
         let state = if self.show_hidden { "shown" } else { "hidden" };
         self.set_info(format!("hidden files {state}"));
       }
+      Action::Sort(key) => self.set_sort(key),
       Action::Reload => self.reload(),
       Action::ToggleMetadata => {
         self.show_metadata = !self.show_metadata;
@@ -605,6 +610,36 @@ impl App {
     self.set_info("reloaded");
   }
 
+  /// Re-sorts every loaded listing by `key`, keeping the selected entry under the cursor.
+  fn set_sort(&mut self, key: SortKey) {
+    self.sort = key;
+    let want = self.selected().map(|e| e.name.clone());
+    for state in self.dirs.values_mut() {
+      if let DirState::Loaded(listing) = state {
+        sort_entries_by(&mut Arc::make_mut(listing).entries, key);
+      }
+    }
+    // A directory preview not backed by `dirs` (a truncated listing) is re-sorted on its own.
+    if let Some(slot) = &mut self.preview
+      && let PreviewStatus::Ready(content) = &slot.status
+      && let Preview::Directory(listing) = &**content
+    {
+      let mut listing = DirListing::clone(listing);
+      sort_entries_by(&mut listing.entries, key);
+      slot.status = PreviewStatus::Ready(Arc::new(Preview::Directory(Arc::new(listing))));
+    }
+    self.rebuild_visible(want);
+    self.refresh_preview();
+    self.set_info(format!("sorted by {key}"));
+  }
+
+  /// Applies the current sort order to a listing, which arrives in name order.
+  fn sort_listing(&self, listing: &mut DirListing) {
+    if self.sort != SortKey::Name {
+      sort_entries_by(&mut listing.entries, self.sort);
+    }
+  }
+
   /// Recomputes the filtered view of the current directory, keeping `want` (or the
   /// remembered entry) under the cursor when it still exists.
   fn rebuild_visible(&mut self, want: Option<String>) {
@@ -654,7 +689,8 @@ impl App {
       None
     };
     match result {
-      Ok(listing) => {
+      Ok(mut listing) => {
+        self.sort_listing(&mut listing);
         self.counts.insert(path.clone(), listing.count());
         self.request_vcs(&listing);
         let subdirs: Vec<PathBuf> = if is_cwd {
@@ -785,7 +821,16 @@ impl App {
       return; // stale result for an entry the cursor already left
     }
     self.pending_preview = None;
-    let Some(slot) = self.preview.as_mut().filter(|s| s.path == path) else {
+    if self.preview.as_ref().is_none_or(|s| s.path != path) {
+      return;
+    }
+    let result = result.map(|mut preview| {
+      if let Preview::Directory(listing) = &mut preview {
+        self.sort_listing(Arc::make_mut(listing));
+      }
+      preview
+    });
+    let Some(slot) = self.preview.as_mut() else {
       return;
     };
     let mut scan = None;

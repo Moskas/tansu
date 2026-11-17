@@ -9,6 +9,7 @@ use std::fmt;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::action::Action;
+use crate::fs::SortKey;
 
 /// A normalized key press: SHIFT is folded into the character for printable keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -239,6 +240,10 @@ pub const DEFAULT_BINDINGS: &[(&str, Action)] = &[
   ("~", Action::GoHome),
   (".", Action::ToggleHidden),
   ("i", Action::ToggleMetadata),
+  ("on", Action::Sort(SortKey::Name)),
+  ("os", Action::Sort(SortKey::Size)),
+  ("om", Action::Sort(SortKey::Mtime)),
+  ("oc", Action::Sort(SortKey::Ctime)),
   ("r", Action::Reload),
   ("?", Action::ToggleHelp),
   (":", Action::CommandLine),

@@ -52,6 +52,8 @@ pub struct Entry {
   pub group: String,
   /// Modification time in seconds since the Unix epoch.
   pub mtime: i64,
+  /// Status change time in seconds since the Unix epoch.
+  pub ctime: i64,
 }
 
 /// Number of entries inside a directory, both including and excluding hidden ones.
@@ -91,13 +93,13 @@ impl Entry {
       .as_ref()
       .or(lmeta.as_ref())
       .map_or(0, Metadata::len);
-    let (mode, nlink, uid, gid, mtime) = lmeta.as_ref().map_or((0, 0, 0, 0, 0), |m| {
+    let (mode, nlink, uid, gid, mtime, ctime) = lmeta.as_ref().map_or((0, 0, 0, 0, 0, 0), |m| {
       let mtime = m
         .modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map_or(m.mtime(), |d| d.as_secs() as i64);
-      (m.mode(), m.nlink(), m.uid(), m.gid(), mtime)
+      (m.mode(), m.nlink(), m.uid(), m.gid(), mtime, m.ctime())
     });
     let (owner, group) = names(uid, gid);
     Entry {
@@ -113,6 +115,7 @@ impl Entry {
       owner,
       group,
       mtime,
+      ctime,
     }
   }
 

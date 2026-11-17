@@ -335,6 +335,22 @@ fn columns_follow_ratios() {
 // ---- config ----
 
 #[test]
+fn sort_key_parses_from_config() {
+  use tansu::fs::SortKey;
+  assert_eq!(Config::default().sort, SortKey::Name);
+  for (text, key) in [
+    ("name", SortKey::Name),
+    ("size", SortKey::Size),
+    ("mtime", SortKey::Mtime),
+    ("ctime", SortKey::Ctime),
+  ] {
+    let cfg = Config::parse(&format!("sort = \"{text}\"")).unwrap();
+    assert_eq!(cfg.sort, key);
+  }
+  assert!(Config::parse("sort = \"atime\"").is_err());
+}
+
+#[test]
 fn empty_config_is_default() {
   assert_eq!(Config::parse("").unwrap(), Config::default());
 }
@@ -697,6 +713,33 @@ fn parses_console_commands() {
     parse("reload now"),
     Some(Err(ConsoleError::UnexpectedArgument { .. }))
   ));
+}
+
+#[test]
+fn parses_sort_command() {
+  use tansu::fs::SortKey;
+  assert_eq!(
+    parse("sort mtime"),
+    Some(Ok(ConsoleCommand::Action(Action::Sort(SortKey::Mtime))))
+  );
+  assert_eq!(parse("sort"), Some(Err(ConsoleError::MissingSortKey)));
+  assert_eq!(
+    parse("sort atime"),
+    Some(Err(ConsoleError::UnknownSortKey("atime".into())))
+  );
+  assert!(matches!(
+    parse("sort size name"),
+    Some(Err(ConsoleError::UnexpectedArgument { .. }))
+  ));
+  // Every sort action's name is the command line that runs it, and binds in the config.
+  for key in SortKey::ALL {
+    let action = Action::Sort(key);
+    assert_eq!(
+      parse(action.name()),
+      Some(Ok(ConsoleCommand::Action(action)))
+    );
+    assert_eq!(action.name().parse::<Action>(), Ok(action));
+  }
 }
 
 #[test]
