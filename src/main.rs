@@ -13,7 +13,7 @@ use tansu::fs::meta;
 use tansu::graphics::ImageEncoder;
 use tansu::keymap::Keymap;
 use tansu::opener;
-use tansu::preview::PreviewRegistry;
+use tansu::preview::{PreviewRegistry, ThumbnailCache};
 use tansu::runtime::Runtime;
 use tansu::shell::ShellMode;
 use tansu::terminal::TerminalGuard;
@@ -75,7 +75,12 @@ fn main() -> Result<()> {
   }
   let (tx, rx) = mpsc::channel();
   let input = event::spawn_input_thread(tx.clone());
-  let registry = PreviewRegistry::configured(&app.config.highlight, app.config.preview_images);
+  let mut registry = PreviewRegistry::configured(&app.config.highlight, app.config.preview_images);
+  if let Some(dirs) = &dirs {
+    registry.set_thumbnails(ThumbnailCache::new(
+      dirs.cache_dir().join("tansu").join("thumbnails"),
+    ));
+  }
   let mut runtime = Runtime::new(
     tx,
     Arc::new(registry),

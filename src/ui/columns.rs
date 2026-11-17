@@ -12,7 +12,7 @@ use super::{entry_style, icons, layout};
 use crate::app::{App, DirState, PreviewStatus};
 use crate::config::Theme;
 use crate::fs::meta::human_size;
-use crate::fs::{Entry, EntryKind};
+use crate::fs::{Entry, EntryKind, FileClass};
 use crate::nav::passive_offset;
 use crate::preview::{Preview, SpanStyle, TermColor, metadata_lines};
 use crate::vcs::{FileStatus, Mark, RemoteStatus};
@@ -186,25 +186,45 @@ pub fn metadata_rows(entry: &Entry, status: &PreviewStatus) -> Vec<(String, Stri
     PreviewStatus::Ready(p) => Some(&**p),
     _ => None,
   };
+  // A metadata preview already is the metadata, with whatever a renderer added to it.
+  if let Some(Preview::Metadata(rows)) = content {
+    return rows.clone();
+  }
+  // An image preview of something that is not an image file is a rendering of it (a video
+  // frame, a document page): its pixel size says nothing about the file.
+  let photo = entry.class() == FileClass::Image;
   let label = match content {
     Some(Preview::Text { .. } | Preview::Highlighted { .. }) if !entry.is_executable() => {
       Some("text file")
     }
-    Some(Preview::Image(_)) => Some("image"),
+    Some(Preview::Image(_)) if photo => Some("image"),
+    Some(Preview::Image(_)) => class_label(entry.class()),
     _ => None,
   };
   let mut rows = metadata_lines(entry, label);
   if let Some(Preview::Image(image)) = content {
-    rows.insert(
-      2,
-      (
-        "Dimensions".to_string(),
-        format!("{}x{}", image.width, image.height),
-      ),
-    );
+    if photo {
+      rows.insert(
+        2,
+        (
+          "Dimensions".to_string(),
+          format!("{}x{}", image.width, image.height),
+        ),
+      );
+    }
     rows.extend(image.info.iter().cloned());
   }
   rows
+}
+
+/// The type shown for files previewed through a rendering.
+fn class_label(class: FileClass) -> Option<&'static str> {
+  match class {
+    FileClass::Video => Some("video"),
+    FileClass::Audio => Some("audio"),
+    FileClass::Document => Some("document"),
+    _ => None,
+  }
 }
 
 /// Draws `rows` from `skip` on, keys aligned over all rows so scrolling does not shift them.

@@ -27,6 +27,7 @@ fn preview(registry: &PreviewRegistry, path: &Path, limits: PreviewLimits) -> Pr
   let ctx = PreviewContext {
     limits,
     cancelled: &|| false,
+    thumbnails: None,
   };
   registry.preview(&entry(path), &ctx).unwrap()
 }
@@ -382,4 +383,53 @@ fn exposure_times_read_like_a_camera_shows_them() {
   assert_eq!(exposure(1, 250), "1/250 s");
   assert_eq!(exposure(5, 2), "2.5 s");
   assert_eq!(exposure(30, 1), "30 s");
+}
+
+#[test]
+fn renderings_are_scaled_down_and_cached_privately() {
+  use std::os::unix::fs::PermissionsExt as _;
+  use tansu::preview::thumbnail::{MAX_SIDE, Rendered, cached_preview};
+
+  let tmp = tempfile::tempdir().unwrap();
+  let file = tmp.path().join("huge.bin");
+  fs::write(&file, "x").unwrap();
+  let cache_dir = tmp.path().join("cache/tansu/thumbnails");
+  let cache = tansu::preview::ThumbnailCache::new(cache_dir.clone());
+  let ctx = PreviewContext {
+    limits: PreviewLimits::default(),
+    cancelled: &|| false,
+    thumbnails: Some(&cache),
+  };
+  let info = vec![("Pages".to_string(), "3".to_string())];
+  let preview = cached_preview(&entry(&file), "test", "document", &ctx, |out| {
+    image::RgbImage::from_pixel(2400, 1200, image::Rgb([1, 2, 3]))
+      .save(out)
+      .unwrap();
+    Ok(Rendered::Image(info.clone()))
+  })
+  .unwrap()
+  .unwrap();
+  let Preview::Image(img) = preview else {
+    panic!("expected an image");
+  };
+  assert_eq!((img.width, img.height), (MAX_SIDE, MAX_SIDE / 2));
+  assert_eq!(img.info, info);
+
+  let mode = fs::metadata(&cache_dir).unwrap().permissions().mode();
+  assert_eq!(mode & 0o777, 0o700);
+  let mut names: Vec<String> = fs::read_dir(&cache_dir)
+    .unwrap()
+    .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+    .collect();
+  names.sort();
+  assert_eq!(names.len(), 2, "no scratch files left: {names:?}");
+  let cached = image::open(cache_dir.join(&names[0])).unwrap();
+  assert_eq!((cached.width(), cached.height()), (MAX_SIDE, MAX_SIDE / 2));
+
+  // The second time comes from the cache; the renderer is not called.
+  let again = cached_preview(&entry(&file), "test", "document", &ctx, |_| {
+    panic!("rendered again")
+  })
+  .unwrap();
+  assert!(matches!(again, Some(Preview::Image(_))));
 }

@@ -8,6 +8,7 @@ pub mod highlight;
 mod image;
 mod metadata;
 mod text;
+pub mod thumbnail;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,6 +23,7 @@ pub use highlight::{HighlightConfig, Highlighter};
 pub use image::{ImagePreviewer, PreviewImage};
 pub use metadata::{MetadataPreviewer, metadata_lines};
 pub use text::{TextPreviewer, looks_binary};
+pub use thumbnail::ThumbnailCache;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Preview {
@@ -61,6 +63,8 @@ impl Default for PreviewLimits {
 pub struct PreviewContext<'a> {
   pub limits: PreviewLimits,
   pub cancelled: &'a dyn Fn() -> bool,
+  /// Where rendered thumbnails are kept; set by the registry from its own cache.
+  pub thumbnails: Option<&'a ThumbnailCache>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -103,6 +107,7 @@ pub trait Previewer: Send + Sync {
 #[derive(Default)]
 pub struct PreviewRegistry {
   previewers: Vec<(i32, Box<dyn Previewer>)>,
+  thumbnails: Option<ThumbnailCache>,
 }
 
 impl PreviewRegistry {
@@ -150,7 +155,17 @@ impl PreviewRegistry {
     self.previewers.iter().map(|(_, p)| p.name()).collect()
   }
 
+  /// Keeps rendered thumbnails (video frames, PDF pages, covers) in `cache`.
+  pub fn set_thumbnails(&mut self, cache: ThumbnailCache) {
+    self.thumbnails = Some(cache);
+  }
+
   pub fn preview(&self, entry: &Entry, ctx: &PreviewContext) -> Result<Preview, PreviewError> {
+    let ctx = &PreviewContext {
+      limits: ctx.limits,
+      cancelled: ctx.cancelled,
+      thumbnails: self.thumbnails.as_ref().or(ctx.thumbnails),
+    };
     for (_, p) in &self.previewers {
       if (ctx.cancelled)() {
         return Err(PreviewError::Cancelled);

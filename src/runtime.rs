@@ -205,6 +205,7 @@ pub fn run_preview(
   let ctx = PreviewContext {
     limits,
     cancelled: &cancelled,
+    thumbnails: None,
   };
   let mut result = match registry.preview(entry, &ctx) {
     Err(PreviewError::Cancelled) => return None,
