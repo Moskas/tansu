@@ -8,6 +8,7 @@ pub mod icons;
 pub mod layout;
 pub mod status;
 pub mod text;
+pub mod which_key;
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -41,6 +42,9 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App) {
   header::render(buf, header_area, app);
   columns::render(buf, body_area, app);
   status::render(buf, status_area, app);
+  if app.console.is_none() && !app.show_help {
+    which_key::render(buf, body_area, app);
+  }
   if app.show_help {
     help::render(buf, area, app);
   }

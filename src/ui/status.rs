@@ -43,6 +43,12 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App) {
 
   let left_w = right_x.saturating_sub(area.x).saturating_sub(1);
   let left = Rect::new(area.x, area.y, left_w, 1);
+  // An unfinished key sequence, shown like emacs shows a pending prefix (`g-`).
+  if app.keymap.is_pending() {
+    let prefix = format!("{}-", app.keymap.pending_notation());
+    Line::styled(prefix, Style::new().fg(theme.help_key.0)).render(left, buf);
+    return;
+  }
   if let Some(msg) = &app.message {
     let color = match msg.level {
       MessageLevel::Error => theme.error.0,

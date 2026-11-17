@@ -36,6 +36,9 @@ pub struct Config {
   /// Show images in the preview column with the terminal's graphics protocol (like
   /// ranger's `preview_images`).
   pub preview_images: bool,
+  /// Show the keys that can follow an unfinished key sequence, like which-key in vim and
+  /// emacs.
+  pub which_key: bool,
   pub preview: PreviewLimits,
   /// Syntax highlighting of text previews through `bat`.
   pub highlight: HighlightConfig,
@@ -57,6 +60,7 @@ impl Default for Config {
       binary_size_prefix: false,
       scroll_offset: 8,
       preview_images: true,
+      which_key: true,
       preview: PreviewLimits::default(),
       highlight: HighlightConfig::default(),
       theme: Theme::default(),
@@ -186,6 +190,8 @@ pub struct Theme {
   pub status_perms_other: ThemeColor,
   pub error: ThemeColor,
   pub help_key: ThemeColor,
+  /// Prefixes of longer sequences in the which-key popup.
+  pub help_group: ThemeColor,
   pub vcs_sync: ThemeColor,
   pub vcs_changed: ThemeColor,
   pub vcs_staged: ThemeColor,
@@ -228,6 +234,7 @@ impl Default for Theme {
       status_perms_other: hex(0xd3869b),
       error: hex(0xfb4934),
       help_key: hex(0xfabd2f),
+      help_group: hex(0xfb4934),
       vcs_sync: hex(0xb8bb26),
       vcs_changed: hex(0xfb4934),
       vcs_staged: hex(0xb8bb26),

@@ -251,6 +251,47 @@ fn multi_key_sequences_resolve() {
 }
 
 #[test]
+fn continuations_list_the_keys_after_a_prefix() {
+  use tansu::fs::SortKey;
+  use tansu::keymap::Continuation;
+  let mut km = Keymap::default();
+  km.feed(ch('o'));
+  assert_eq!(km.pending_notation(), "o");
+  assert_eq!(
+    km.continuations(),
+    vec![
+      (
+        "c".into(),
+        Continuation::Action(Action::Sort(SortKey::Ctime))
+      ),
+      (
+        "m".into(),
+        Continuation::Action(Action::Sort(SortKey::Mtime))
+      ),
+      (
+        "n".into(),
+        Continuation::Action(Action::Sort(SortKey::Name))
+      ),
+      (
+        "s".into(),
+        Continuation::Action(Action::Sort(SortKey::Size))
+      ),
+    ]
+  );
+  // Longer sequences show as a group under their next key.
+  let overrides: Vec<(String, String)> = vec![
+    ("gxa".into(), "quit".into()),
+    ("gxb".into(), "reload".into()),
+  ];
+  let (mut km, warnings) = Keymap::with_overrides(overrides.iter().map(|(k, a)| (k, a)));
+  assert!(warnings.is_empty());
+  km.feed(ch('g'));
+  let next = km.continuations();
+  assert!(next.contains(&("g".into(), Continuation::Action(Action::MoveTop))));
+  assert!(next.contains(&("x".into(), Continuation::Group(2))));
+}
+
+#[test]
 fn config_overrides_add_replace_and_unbind() {
   let overrides: Vec<(String, String)> = vec![
     ("J".into(), "half_page_down".into()),

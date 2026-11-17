@@ -117,6 +117,11 @@ cargo test
 | `:`                         | Open the command line         |
 | `q`, `<C-c>`                | Quit                          |
 
+While a key sequence is unfinished, the status bar shows the keys typed so far (`y-`) and a
+popup above it lists the keys that can follow and what they do, like which-key in vim and
+emacs. Keys leading to longer sequences show as `+N bindings`. Set `which_key = false` to keep
+only the status bar prefix.
+
 Directories are always listed before files; the sort order applies within each group. Time
 sorts put the newest entries first. Sorting by size orders files only, since a directory's own
 size says nothing about its contents; directories stay in name order. Changing the order
@@ -284,6 +289,8 @@ scroll_offset = 8
 
 # Draw image previews with the terminal's graphics protocol.
 preview_images = true
+# Show the keys that can follow an unfinished key sequence (`g`, `y`, ...).
+which_key = true
 
 [preview]
 max_bytes = 65536     # bytes read from a file for the text preview
@@ -323,6 +330,7 @@ status_perms = "#8ec07c"
 status_perms_other = "#d3869b"
 error = "#fb4934"
 help_key = "#fabd2f"
+help_group = "#fb4934"
 vcs_sync = "#b8bb26"
 vcs_changed = "#fb4934"
 vcs_staged = "#b8bb26"

@@ -1354,6 +1354,34 @@ fn command_line_shell_queues_command_in_current_directory() {
 }
 
 #[test]
+fn which_key_shows_what_can_follow_a_prefix() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  let screen = |app: &App| render_sized(app, 100, HEIGHT).join("\n");
+  let status = |app: &App| render_sized(app, 100, HEIGHT).pop().unwrap();
+  assert!(!status(&app).starts_with("o-"));
+  press(&mut app, "o");
+  let shown = screen(&app);
+  assert!(shown.contains(" o- "), "{shown}");
+  assert!(shown.contains("n : Sort by name"), "{shown}");
+  assert!(shown.contains("s : Sort by size"), "{shown}");
+  // The status bar shows the prefix instead of the entry's metadata.
+  assert!(status(&app).starts_with("o-"), "{}", status(&app));
+
+  // Finishing or breaking off the sequence closes it.
+  press(&mut app, "m");
+  assert!(!screen(&app).contains("Sort by name"));
+  press(&mut app, "g<Esc>");
+  assert!(!screen(&app).contains("Jump to first entry"));
+
+  // Turned off, only the status bar prefix remains.
+  app.config.which_key = false;
+  press(&mut app, "o");
+  assert!(!screen(&app).contains("Sort by name"));
+  assert!(status(&app).starts_with("o-"));
+}
+
+#[test]
 fn shell_c_macro_expands_to_the_copy_buffer() {
   use tansu::shell::ShellMode;
   let (_tmp, work) = fixture();

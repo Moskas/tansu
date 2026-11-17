@@ -204,6 +204,15 @@ pub enum KeyResult {
   Unbound,
 }
 
+/// What pressing one more key does while a sequence is pending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Continuation {
+  /// Completes the sequence and runs this action.
+  Action(Action),
+  /// Leads to this many longer bindings.
+  Group(usize),
+}
+
 /// Binding table plus the state needed to resolve multi-key sequences.
 #[derive(Debug, Clone)]
 pub struct Keymap {
@@ -338,6 +347,29 @@ impl Keymap {
 
   pub fn is_pending(&self) -> bool {
     !self.pending.is_empty()
+  }
+
+  /// The keys typed so far of an unfinished sequence, in notation (`g`, `<C-x>`).
+  pub fn pending_notation(&self) -> String {
+    format_sequence(&self.pending)
+  }
+
+  /// What can follow the pending keys, one entry per next key, sorted by key.
+  pub fn continuations(&self) -> Vec<(String, Continuation)> {
+    let depth = self.pending.len();
+    let mut next: BTreeMap<String, Continuation> = BTreeMap::new();
+    for (seq, action) in self.bindings.values() {
+      if seq.len() <= depth || seq[..depth] != self.pending[..] {
+        continue;
+      }
+      let key = seq[depth].to_string();
+      if seq.len() == depth + 1 {
+        next.insert(key, Continuation::Action(*action));
+      } else if let Continuation::Group(n) = next.entry(key).or_insert(Continuation::Group(0)) {
+        *n += 1;
+      }
+    }
+    next.into_iter().collect()
   }
 
   pub fn reset(&mut self) {
