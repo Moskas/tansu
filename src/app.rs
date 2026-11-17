@@ -12,11 +12,12 @@ use std::time::{Duration, Instant};
 use crossterm::event::KeyCode;
 
 use crate::action::Action;
+use crate::clipboard;
 use crate::config::Config;
 use crate::console::{self, CompletionSource, ConsoleCommand, EditOutcome, LineEditor};
 use crate::event::Event;
 use crate::fs::sort::sort_entries_by;
-use crate::fs::{DirCount, DirListing, Entry, SortKey};
+use crate::fs::{DirCount, DirListing, Entry, PasteMode, SortKey};
 use crate::graphics::EncodedImage;
 use crate::keymap::{Key, KeyResult, Keymap};
 use crate::nav::{Cursor, ScrollPos};
@@ -26,6 +27,15 @@ use crate::vcs::{DirVcs, FileStatus, Mark, RepoStatus, VcsRequest};
 const PREVIEW_CACHE_LIMIT: usize = 128;
 const IMAGE_CACHE_LIMIT: usize = 8;
 const INFO_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// `1 item`, `3 items`.
+fn items(n: usize) -> String {
+  if n == 1 {
+    "1 item".to_string()
+  } else {
+    format!("{n} items")
+  }
+}
 
 /// Side effects requested by the app.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +63,15 @@ pub enum Command {
     from: PathBuf,
     to: PathBuf,
   },
+  /// Copy or move `sources` into the directory `dest`.
+  Paste {
+    sources: Vec<PathBuf>,
+    dest: PathBuf,
+    mode: PasteMode,
+    overwrite: bool,
+  },
+  /// Put this on the system clipboard.
+  Clipboard(clipboard::Content),
   /// Record a visit to this directory in the zoxide database.
   ZoxideAdd(PathBuf),
   /// Look up the best zoxide match for `keywords`, other than `exclude`.
@@ -107,6 +126,13 @@ struct CachedPreview {
   image: Option<Arc<EncodedImage>>,
 }
 
+/// Entries copied (`yy`) or cut (`dd`), waiting to be pasted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileBuffer {
+  pub paths: Vec<PathBuf>,
+  pub mode: PasteMode,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageLevel {
   Info,
@@ -142,6 +168,8 @@ pub struct App {
   /// Show file metadata instead of the content preview (directories keep their listing).
   pub show_metadata: bool,
   pub should_quit: bool,
+  /// Copy/cut buffer, kept across directory changes.
+  pub buffer: Option<FileBuffer>,
   pub message: Option<Message>,
   pub preview: Option<PreviewSlot>,
   dirs: HashMap<PathBuf, DirState>,
@@ -195,6 +223,7 @@ impl App {
       programs: OnceCell::new(),
       show_metadata: false,
       should_quit: false,
+      buffer: None,
       message: None,
       preview: None,
       dirs: HashMap::new(),
@@ -360,6 +389,16 @@ impl App {
       } => self.on_preview(id, path, result, image),
       Event::Counts(counts) => self.counts.extend(counts),
       Event::Renamed { from, to, result } => self.on_renamed(from, to, result),
+      Event::Pasted {
+        dest,
+        mode,
+        results,
+      } => self.on_pasted(dest, mode, results),
+      Event::Clipboard(result) => {
+        if let Err(e) = result {
+          self.set_error(e);
+        }
+      }
       Event::Zoxide(result) => match result {
         Ok(path) => self.go_to(path, console::Z),
         Err(e) => self.set_error(e),
@@ -600,6 +639,155 @@ impl App {
     });
   }
 
+  /// `yy` / `dd`: puts the selected entry into the buffer, replacing what was there.
+  fn fill_buffer(&mut self, mode: PasteMode) {
+    let Some(entry) = self.selected().cloned() else {
+      self.set_error("nothing selected");
+      return;
+    };
+    self.buffer = Some(FileBuffer {
+      paths: vec![entry.path],
+      mode,
+    });
+    let verb = match mode {
+      PasteMode::Copy => "copied",
+      PasteMode::Move => "cut",
+    };
+    self.set_info(format!("{verb} {}", entry.name));
+  }
+
+  /// `pp` / `po`: pastes the buffer into the current directory.
+  fn paste(&mut self, overwrite: bool) {
+    let Some(buffer) = self.buffer.clone() else {
+      self.set_error("nothing to paste");
+      return;
+    };
+    let verb = match buffer.mode {
+      PasteMode::Copy => "copying",
+      PasteMode::Move => "moving",
+    };
+    self.set_info(format!("{verb} {}", items(buffer.paths.len())));
+    self.commands.push(Command::Paste {
+      sources: buffer.paths,
+      dest: self.cwd.clone(),
+      mode: buffer.mode,
+      overwrite,
+    });
+  }
+
+  fn on_pasted(
+    &mut self,
+    dest: PathBuf,
+    mode: PasteMode,
+    results: Vec<(PathBuf, Result<PathBuf, String>)>,
+  ) {
+    let mut refresh = vec![dest.clone()];
+    let mut pasted = Vec::new();
+    let mut errors = Vec::new();
+    for (src, result) in results {
+      let target = match result {
+        Ok(target) => target,
+        Err(e) => {
+          errors.push(e);
+          continue;
+        }
+      };
+      // Listings under a moved source, or a directory merged into, are stale.
+      let stale =
+        |p: &PathBuf| p.starts_with(&target) || (mode == PasteMode::Move && p.starts_with(&src));
+      self.dirs.retain(|p, _| !stale(p));
+      self.counts.retain(|p, _| !stale(p));
+      self.preview_cache.retain(|p, _| !stale(p));
+      if mode == PasteMode::Move {
+        if let Some(parent) = src.parent() {
+          refresh.push(parent.to_path_buf());
+        }
+        // A moved entry can only be pasted once.
+        if let Some(buffer) = &mut self.buffer
+          && buffer.mode == PasteMode::Move
+        {
+          buffer.paths.retain(|p| *p != src);
+        }
+      }
+      pasted.push(target);
+    }
+    if self.buffer.as_ref().is_some_and(|b| b.paths.is_empty()) {
+      self.buffer = None;
+    }
+
+    if let Some(first) = errors.first() {
+      let more = errors.len() - 1;
+      let suffix = if more > 0 {
+        format!(" (+{more} more)")
+      } else {
+        String::new()
+      };
+      self.set_error(format!("{first}{suffix}"));
+    } else {
+      let verb = match mode {
+        PasteMode::Copy => "copied",
+        PasteMode::Move => "moved",
+      };
+      let what = match pasted.as_slice() {
+        [one] => one
+          .file_name()
+          .map(|n| crate::fs::entry::sanitize(&n.to_string_lossy()))
+          .unwrap_or_default(),
+        many => items(many.len()),
+      };
+      self.set_info(format!("{verb} {what}"));
+    }
+    if let Some(name) = pasted.first().and_then(|t| t.file_name()) {
+      let name = crate::fs::entry::sanitize(&name.to_string_lossy());
+      self.remembered.insert(dest.clone(), name.clone());
+      self.select_after_load = Some((dest.clone(), name));
+    }
+    refresh.dedup();
+    for dir in refresh {
+      if dir == self.cwd || self.dirs.contains_key(&dir) {
+        self.vcs_force.insert(dir.clone());
+        self.request_dir(&dir, true);
+      }
+    }
+  }
+
+  /// `yp`, `yd`, `yn`, `y.` and `yf`: puts a path, a name or the selected file itself on the
+  /// system clipboard.
+  fn yank(&mut self, action: Action) {
+    let path = if action == Action::YankDir {
+      self.cwd.clone()
+    } else {
+      match self.selected() {
+        Some(entry) => entry.path.clone(),
+        None => {
+          self.set_error("nothing selected");
+          return;
+        }
+      }
+    };
+    let name = || path.file_name().unwrap_or(path.as_os_str());
+    let content = match action {
+      Action::YankFile => clipboard::Content::Files(vec![path.clone()]),
+      Action::YankName => clipboard::Content::Text(name().to_string_lossy().into_owned()),
+      Action::YankNameWithoutExt => {
+        let stem = path.file_stem().unwrap_or_else(name);
+        clipboard::Content::Text(stem.to_string_lossy().into_owned())
+      }
+      _ => clipboard::Content::Text(path.to_string_lossy().into_owned()),
+    };
+    let shown = match &content {
+      clipboard::Content::Text(text) => crate::fs::entry::sanitize(text),
+      clipboard::Content::Files(_) => {
+        format!(
+          "file {}",
+          crate::fs::entry::sanitize(&name().to_string_lossy())
+        )
+      }
+    };
+    self.set_info(format!("yanked {shown}"));
+    self.commands.push(Command::Clipboard(content));
+  }
+
   /// Called after a foreground program returned the terminal. The program may have changed
   /// files, so the current directory is listed again.
   pub fn on_foreground_exit(&mut self, program: &str, result: Result<ExitStatus, String>) {
@@ -693,6 +881,19 @@ impl App {
       }
       Action::Sort(key) => self.set_sort(key),
       Action::Rename => self.prompt_rename(),
+      Action::Copy => self.fill_buffer(PasteMode::Copy),
+      Action::Cut => self.fill_buffer(PasteMode::Move),
+      Action::Paste => self.paste(false),
+      Action::PasteOverwrite => self.paste(true),
+      Action::ClearBuffer => {
+        self.buffer = None;
+        self.set_info("buffer cleared");
+      }
+      Action::YankPath
+      | Action::YankDir
+      | Action::YankName
+      | Action::YankNameWithoutExt
+      | Action::YankFile => self.yank(action),
       Action::Reload => self.reload(),
       Action::ToggleMetadata => {
         self.show_metadata = !self.show_metadata;

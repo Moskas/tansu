@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crossterm::event::{self as ct, KeyEvent};
 
-use crate::fs::{DirCount, DirListing};
+use crate::fs::{DirCount, DirListing, PasteMode};
 use crate::graphics::EncodedImage;
 use crate::preview::Preview;
 use crate::vcs::{DirVcs, RepoStatus};
@@ -39,6 +39,14 @@ pub enum Event {
     to: PathBuf,
     result: Result<(), String>,
   },
+  /// Result of pasting into `dest`: each source with where it ended up, or why it failed.
+  Pasted {
+    dest: PathBuf,
+    mode: PasteMode,
+    results: Vec<(PathBuf, Result<PathBuf, String>)>,
+  },
+  /// Result of writing to the system clipboard.
+  Clipboard(Result<(), String>),
   /// VCS status for the entries of `dir`, plus the repositories involved.
   Vcs {
     dir: PathBuf,

@@ -870,7 +870,8 @@ fn completes_command_names() {
   );
   // Commands that take an argument get a trailing space.
   assert_eq!(complete_with("ren", None), vec!["rename "]);
-  assert_eq!(complete_with("c", None), vec!["cd ", "command_line"]);
+  assert_eq!(complete_with("co", None), vec!["command_line", "copy"]);
+  assert_eq!(complete_with("cd", None), vec!["cd "]);
   assert_eq!(complete_with("z", None), vec!["z "]);
   assert_eq!(complete_with("  so", None), vec!["sort "]);
   assert_eq!(complete_with("open", None), vec!["open", "open_with "]);
@@ -941,4 +942,46 @@ fn programs_are_executables_on_path() {
 fn zoxide_add_can_be_disabled() {
   assert!(Config::default().zoxide_add);
   assert!(!Config::parse("zoxide_add = false").unwrap().zoxide_add);
+}
+
+// ---- clipboard ----
+
+#[test]
+fn uri_list_percent_encodes_paths() {
+  use std::path::PathBuf;
+  let paths = vec![
+    PathBuf::from("/home/me/a b.txt"),
+    PathBuf::from("/tmp/好き#1%.md"),
+  ];
+  assert_eq!(
+    tansu::clipboard::uri_list(&paths),
+    "file:///home/me/a%20b.txt\r\nfile:///tmp/%E5%A5%BD%E3%81%8D%231%25.md\r\n"
+  );
+}
+
+#[test]
+fn base64_matches_rfc_4648_vectors() {
+  use tansu::clipboard::base64;
+  let cases = [
+    ("", ""),
+    ("f", "Zg=="),
+    ("fo", "Zm8="),
+    ("foo", "Zm9v"),
+    ("foob", "Zm9vYg=="),
+    ("fooba", "Zm9vYmE="),
+    ("foobar", "Zm9vYmFy"),
+  ];
+  for (input, encoded) in cases {
+    assert_eq!(base64(input.as_bytes()), encoded, "{input:?}");
+  }
+  assert_eq!(base64(&[0xff, 0xfe, 0x00]), "//4A");
+}
+
+#[test]
+fn osc52_wraps_base64_text() {
+  use tansu::clipboard::{Content, osc52};
+  assert_eq!(
+    osc52(&Content::Text("/tmp/a".into())),
+    "\x1b]52;c;L3RtcC9h\x07"
+  );
 }

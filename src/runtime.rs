@@ -9,8 +9,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::app::Command;
+use crate::clipboard::{self, Backend};
 use crate::event::Event;
-use crate::fs::{DirCount, Entry, count_entries, list_dir};
+use crate::fs::{DirCount, Entry, PasteMode, count_entries, list_dir, ops};
 use crate::graphics::ImageEncoder;
 use crate::preview::{Preview, PreviewContext, PreviewError, PreviewLimits, PreviewRegistry};
 use crate::vcs::{self, DirVcs, GitError, RepoStatus, VcsRequest};
@@ -111,6 +112,39 @@ pub fn rename(from: &Path, to: &Path) -> Event {
     to: to.to_path_buf(),
     result,
   }
+}
+
+/// Pastes each of `sources` into `dest`, carrying on past failures.
+pub fn paste(sources: &[PathBuf], dest: &Path, mode: PasteMode, overwrite: bool) -> Event {
+  let results = sources
+    .iter()
+    .map(|src| (src.clone(), ops::paste(src, dest, mode, overwrite)))
+    .collect();
+  Event::Pasted {
+    dest: dest.to_path_buf(),
+    mode,
+    results,
+  }
+}
+
+/// A paste request: sources, destination directory, mode and whether to overwrite.
+type PasteJob = (Vec<PathBuf>, PathBuf, PasteMode, bool);
+
+/// Starts the thread that runs pastes one after another, so two pastes never race for the
+/// same names and a large copy does not hold up the UI.
+fn spawn_paste_worker(tx: Sender<Event>) -> Sender<PasteJob> {
+  let (job_tx, job_rx) = mpsc::channel::<PasteJob>();
+  let spawned = thread::Builder::new().name("paste".into()).spawn(move || {
+    while let Ok((sources, dest, mode, overwrite)) = job_rx.recv() {
+      if tx.send(paste(&sources, &dest, mode, overwrite)).is_err() {
+        return;
+      }
+    }
+  });
+  if let Err(e) = spawned {
+    eprintln!("tansu: could not start paste worker: {e}");
+  }
+  job_tx
 }
 
 /// Runs the registry for one entry and, for images, encodes the result for `cells` when an
@@ -283,6 +317,7 @@ pub struct Runtime {
   counts: LatestWorker<Vec<PathBuf>>,
   vcs: Sender<VcsRequest>,
   zoxide_add: Sender<PathBuf>,
+  paste: Sender<PasteJob>,
   opener: String,
 }
 
@@ -310,12 +345,14 @@ impl Runtime {
     });
     let vcs = spawn_vcs_worker(tx.clone());
     let zoxide_add = spawn_zoxide_add_worker();
+    let paste = spawn_paste_worker(tx.clone());
     Runtime {
       tx,
       previews,
       counts,
       vcs,
       zoxide_add,
+      paste,
       opener,
     }
   }
@@ -366,13 +403,48 @@ impl Runtime {
       Command::Rename { from, to } => {
         let _ = self.tx.send(rename(&from, &to));
       }
+      Command::Paste {
+        sources,
+        dest,
+        mode,
+        overwrite,
+      } => {
+        let _ = self.paste.send((sources, dest, mode, overwrite));
+      }
+      Command::Clipboard(content) => match clipboard::backend(&content) {
+        Err(e) => return Some(e),
+        // Commands run on the main thread between draws, so the sequence cannot land in
+        // the middle of a frame.
+        Ok(Backend::Osc52) => {
+          use std::io::Write;
+          let mut out = std::io::stdout().lock();
+          let written = out
+            .write_all(clipboard::osc52(&content).as_bytes())
+            .and_then(|()| out.flush());
+          if let Err(e) = written {
+            return Some(format!("clipboard: {e}"));
+          }
+        }
+        Ok(Backend::Program(argv)) => {
+          let tx = self.tx.clone();
+          let spawned = thread::Builder::new()
+            .name("clipboard".into())
+            .spawn(move || {
+              let _ = tx.send(Event::Clipboard(clipboard::run(&argv, &content)));
+            });
+          if let Err(e) = spawned {
+            return Some(format!("clipboard: could not start: {e}"));
+          }
+        }
+      },
     }
     None
   }
 }
 
-/// Runs a command to completion on the current thread. `Open`, `Spawn` and `ZoxideAdd` are
-/// ignored, so tests never touch the user's programs or zoxide database.
+/// Runs a command to completion on the current thread. `Open`, `Spawn`, `ZoxideAdd` and
+/// `Clipboard` are ignored, so tests never touch the user's programs, zoxide database or
+/// clipboard.
 pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLimits) -> Vec<Event> {
   let token = CancelToken::never();
   match cmd {
@@ -390,8 +462,16 @@ pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLim
     Command::VcsScan(req) => VcsScanner::default().scan(&req).into_iter().collect(),
     Command::Rename { from, to } => vec![rename(&from, &to)],
     Command::Zoxide { keywords, exclude } => vec![zoxide_query(&keywords, &exclude)],
-    Command::Open(_) | Command::Spawn { .. } | Command::ZoxideAdd(_) | Command::CancelPreview => {
-      Vec::new()
-    }
+    Command::Paste {
+      sources,
+      dest,
+      mode,
+      overwrite,
+    } => vec![paste(&sources, &dest, mode, overwrite)],
+    Command::Open(_)
+    | Command::Spawn { .. }
+    | Command::ZoxideAdd(_)
+    | Command::Clipboard(_)
+    | Command::CancelPreview => Vec::new(),
   }
 }

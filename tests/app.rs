@@ -1124,3 +1124,184 @@ fn entering_directories_records_them_in_zoxide_unless_disabled() {
       .any(|c| matches!(c, Command::ZoxideAdd(_)))
   );
 }
+
+// ---- copy, cut and paste ----
+
+fn message(app: &App) -> String {
+  app.message.as_ref().unwrap().text.clone()
+}
+
+#[test]
+fn yy_and_pp_copy_the_selection_without_overwriting() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjjyy");
+  assert_eq!(message(&app), "copied file2.txt");
+  press(&mut app, "ggjl");
+  assert_eq!(app.cwd, work.join("beta"));
+  press(&mut app, "pp");
+  assert_eq!(message(&app), "copied file2.txt");
+  assert_eq!(selected(&app), "file2.txt");
+  assert_eq!(
+    fs::read_to_string(work.join("beta/file2.txt")).unwrap(),
+    "two\n"
+  );
+  assert!(work.join("file2.txt").exists(), "the source is kept");
+
+  // The buffer stays, and existing names get ranger's suffixes.
+  press(&mut app, "pp");
+  assert_eq!(selected(&app), "file2.txt_");
+  press(&mut app, "pp");
+  assert_eq!(selected(&app), "file2.txt_0");
+  let mut listed = names(&app);
+  listed.sort();
+  assert_eq!(listed, vec!["file2.txt", "file2.txt_", "file2.txt_0"]);
+}
+
+#[test]
+fn dd_and_pp_move_the_selection_and_empty_the_buffer() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjjdd");
+  assert_eq!(message(&app), "cut file2.txt");
+  press(&mut app, "ggjlpp");
+  assert_eq!(message(&app), "moved file2.txt");
+  assert_eq!(
+    fs::read_to_string(work.join("beta/file2.txt")).unwrap(),
+    "two\n"
+  );
+  assert!(!work.join("file2.txt").exists());
+  assert!(app.buffer.is_none());
+  press(&mut app, "h");
+  assert!(!names(&app).contains(&"file2.txt".to_string()));
+  press(&mut app, "pp");
+  assert_eq!(message(&app), "nothing to paste");
+}
+
+#[test]
+fn po_overwrites_existing_entries() {
+  let (_tmp, work) = fixture();
+  fs::write(work.join("beta/file2.txt"), "old\n").unwrap();
+  let mut app = new_app(&work);
+  press(&mut app, "jjjyyggjlpo");
+  assert_eq!(
+    fs::read_to_string(work.join("beta/file2.txt")).unwrap(),
+    "two\n"
+  );
+  assert_eq!(names(&app), vec!["file2.txt"]);
+}
+
+#[test]
+fn uy_and_ud_clear_the_buffer() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "yyuy");
+  assert!(app.buffer.is_none());
+  press(&mut app, "ddud");
+  assert!(app.buffer.is_none());
+}
+
+#[test]
+fn pasting_into_the_same_directory() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjjyypp");
+  assert_eq!(selected(&app), "file2.txt_");
+  assert_eq!(
+    fs::read_to_string(work.join("file2.txt_")).unwrap(),
+    "two\n"
+  );
+  // Moving an entry onto itself leaves it alone.
+  press(&mut app, "ggjjjddpp");
+  assert_eq!(fs::read_to_string(work.join("file2.txt")).unwrap(), "two\n");
+  assert_eq!(selected(&app), "file2.txt");
+}
+
+#[test]
+fn directories_copy_recursively_and_never_into_themselves() {
+  let (_tmp, work) = fixture();
+  std::os::unix::fs::symlink("a.txt", work.join("alpha/link")).unwrap();
+  let mut app = new_app(&work);
+  press(&mut app, "yyl");
+  assert_eq!(app.cwd, work.join("alpha"));
+  press(&mut app, "pp");
+  assert_eq!(message(&app), "paste: cannot paste `alpha` into itself");
+  assert!(!work.join("alpha/alpha").exists());
+
+  press(&mut app, "hjlpp");
+  let copy = work.join("beta/alpha");
+  assert_eq!(fs::read_to_string(copy.join("a.txt")).unwrap(), "a\n");
+  assert!(copy.join(".secret").exists());
+  let link = copy.join("link");
+  assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+  assert_eq!(fs::read_link(link).unwrap(), Path::new("a.txt"));
+}
+
+#[test]
+fn overwriting_a_directory_merges_into_it() {
+  let (_tmp, work) = fixture();
+  fs::create_dir(work.join("beta/alpha")).unwrap();
+  fs::write(work.join("beta/alpha/a.txt"), "old\n").unwrap();
+  fs::write(work.join("beta/alpha/x.txt"), "x\n").unwrap();
+  let mut app = new_app(&work);
+  press(&mut app, "ddjlpo");
+  assert_eq!(message(&app), "moved alpha");
+  let merged = work.join("beta/alpha");
+  assert_eq!(fs::read_to_string(merged.join("a.txt")).unwrap(), "a\n");
+  assert_eq!(fs::read_to_string(merged.join("b.txt")).unwrap(), "b\n");
+  assert_eq!(fs::read_to_string(merged.join("x.txt")).unwrap(), "x\n");
+  assert!(!work.join("alpha").exists());
+}
+
+#[test]
+fn a_failed_paste_is_reported_and_the_cut_buffer_kept() {
+  let (_tmp, work) = fixture();
+  fs::create_dir(work.join("beta/file2.txt")).unwrap();
+  let mut app = new_app(&work);
+  press(&mut app, "jjjddggjlpo");
+  assert_eq!(
+    message(&app),
+    "paste: file2.txt: cannot overwrite a directory with a non-directory"
+  );
+  assert!(work.join("file2.txt").exists());
+  assert!(app.buffer.is_some());
+}
+
+#[test]
+fn yank_keys_put_paths_and_names_on_the_clipboard() {
+  use tansu::clipboard::Content;
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjjj"); // file10.txt
+  let yank = |app: &mut App, keys: &str| {
+    press_keys_without_pump(app, keys);
+    app.take_commands()
+  };
+  let path = work.join("file10.txt");
+  assert_eq!(
+    yank(&mut app, "yp"),
+    vec![Command::Clipboard(Content::Text(
+      path.to_string_lossy().into_owned()
+    ))]
+  );
+  assert_eq!(message(&app), format!("yanked {}", path.display()));
+  assert_eq!(
+    yank(&mut app, "yd"),
+    vec![Command::Clipboard(Content::Text(
+      work.to_string_lossy().into_owned()
+    ))]
+  );
+  assert_eq!(
+    yank(&mut app, "yn"),
+    vec![Command::Clipboard(Content::Text("file10.txt".into()))]
+  );
+  assert_eq!(
+    yank(&mut app, "y."),
+    vec![Command::Clipboard(Content::Text("file10".into()))]
+  );
+  assert_eq!(
+    yank(&mut app, "yf"),
+    vec![Command::Clipboard(Content::Files(vec![path]))]
+  );
+  assert_eq!(message(&app), "yanked file file10.txt");
+}

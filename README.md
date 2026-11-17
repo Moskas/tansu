@@ -101,6 +101,16 @@ cargo test
 | `om`                        | Sort by modification time     |
 | `oc`                        | Sort by change time           |
 | `r`                         | Rename the selection          |
+| `yy`                        | Copy the selection            |
+| `dd`                        | Cut the selection             |
+| `pp`                        | Paste, never overwriting      |
+| `po`                        | Paste, overwriting            |
+| `uy`, `ud`                  | Clear the copy/cut buffer     |
+| `yp`                        | Yank the selection's path     |
+| `yd`                        | Yank the current directory    |
+| `yn`                        | Yank the selection's name     |
+| `y.`                        | Yank name without extension   |
+| `yf`                        | Yank the selection as a file  |
 | `R`                         | Reload directory              |
 | `?`                         | Toggle help overlay           |
 | `:`                         | Open the command line         |
@@ -113,6 +123,39 @@ keeps the selected entry under the cursor and applies to every column.
 
 Files are opened with the configured opener (default `xdg-open`), detached from the
 terminal so tansu stays usable.
+
+## Copy, cut and paste
+
+`yy` copies and `dd` cuts the selection into a buffer, replacing what was in it; `pp` pastes it
+into the current directory. A cut followed by a paste is a move. The buffer survives
+directory changes. After a copy it can be pasted again; after a cut it is emptied once the
+move succeeds. `uy` or `ud` clears it.
+
+`pp` never overwrites. As in ranger, a name that is taken gets a suffix: `name_`, then
+`name_0`, `name_1`, and so on. Copying an entry into its own directory therefore makes a
+suffixed duplicate, and moving it there does nothing. `po` overwrites instead: files are
+replaced, and a directory is merged into an existing directory of the same name. A file never
+replaces a directory.
+
+Directories are copied recursively. Symlinks are copied as links, and permissions and
+modification times are kept. Fifos, sockets and device files are refused. Moves use `rename`
+and fall back to copy-and-delete across filesystems. A directory cannot be pasted into
+itself or its own subdirectories. Pastes run in the background, one at a time, and the
+pasted entry is selected when done.
+
+## Clipboard
+
+The `y` keys write to the system clipboard. `yp` yanks the selection's full path, `yd` the
+current directory's path, `yn` the selection's name and `y.` that name without its last
+extension. `yf` yanks the selected file itself as a `text/uri-list` (`file:///...`), so
+pasting into a graphical file manager, browser or chat client pastes the file.
+
+Clipboard access goes through `wl-copy` (wl-clipboard) when `WAYLAND_DISPLAY` is set, and
+otherwise through `xclip` or `xsel` when `DISPLAY` is set. Without any of these, text is sent
+to the terminal as an OSC 52 escape sequence. That also works over SSH, in terminals that
+support it (kitty, WezTerm, foot, Alacritty, Windows Terminal). Inside tmux, OSC 52 needs
+`set -g set-clipboard on`. `yf` needs `wl-copy` or `xclip`, because neither `xsel` nor
+OSC 52 can set a content type.
 
 ## Command line
 
@@ -268,15 +311,17 @@ vcs_commit = "#fabd2f"
 
 Action names: `move_up`, `move_down`, `move_top`, `move_bottom`, `half_page_up`,
 `half_page_down`, `page_up`, `page_down`, `go_parent`, `open`, `go_home`, `toggle_hidden`,
-`toggle_metadata`, `rename`, `sort name`, `sort size`, `sort mtime`, `sort ctime`, `reload`, `toggle_help`,
-`command_line`, `quit`.
+`toggle_metadata`, `rename`, `sort name`, `sort size`, `sort mtime`, `sort ctime`, `copy`,
+`cut`, `paste`, `paste_overwrite`, `clear_buffer`, `yank_path`, `yank_dir`, `yank_name`,
+`yank_name_without_ext`, `yank_file`, `reload`, `toggle_help`, `command_line`, `quit`.
 
 ## Architecture
 
 Data flows one way: input event -> `Action` (via the keymap) -> `App` state update ->
 render. Rendering only reads state. The app never performs I/O itself; it queues
 `Command`s (list a directory, build a preview, count subdirectory items, query git, open a
-file) that the runtime executes in the background and answers with events.
+file, paste, write the clipboard) that the runtime executes in the background and answers
+with events.
 
 | Module        | Purpose                                                            |
 |---------------|--------------------------------------------------------------------|
@@ -292,7 +337,8 @@ file) that the runtime executes in the background and answers with events.
 | `nav.rs`      | Cursor and scroll offset math                                      |
 | `opener.rs`   | Detached and foreground program launching                          |
 | `console.rs`  | Command-line editor and command parser                             |
-| `fs/`         | Entries, listing, natural sort, metadata formatting (no UI types)  |
+| `clipboard.rs`| System clipboard through wl-copy, xclip, xsel or OSC 52            |
+| `fs/`         | Entries, listing, natural sort, metadata, paste ops (no UI types)  |
 | `preview/`    | `Previewer` trait, registry, built-in previewers, ANSI parsing     |
 | `graphics.rs` | Encodes images for the terminal graphics protocol                  |
 | `vcs/`        | Git status via the `git` CLI, per-path and per-directory status    |
