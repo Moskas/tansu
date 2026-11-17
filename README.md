@@ -127,7 +127,7 @@ cargo test
 | `!`, `s`                    | Run a shell command           |
 | `/`                         | Search (opens `:search `)     |
 | `n` / `N`                   | Next / previous search match  |
-| `<Esc>`                     | Stop dimming non-matches      |
+| `<Esc>`                     | Clear the search              |
 | `ms`                        | Mark every search match       |
 | `R`                         | Reload directory              |
 | `?`                         | Toggle help overlay           |
@@ -168,7 +168,7 @@ A click closes the help overlay; the mouse is ignored while the command line is 
 As in ranger, `<Space>` marks the selected entry, or unmarks it if it is marked, and moves
 the cursor down. `v` toggles the mark of every visible entry in the directory: with nothing
 marked it marks everything, and pressed again it unmarks everything. `uv` unmarks every entry
-in the directory, whatever was marked before. `ms` marks every entry matching the last
+in the directory, whatever was marked before. `ms` marks every entry matching the active
 search, keeping the existing marks. Marked entries are drawn
 bold in the `marked` theme color, and the status bar shows their count and size.
 
@@ -269,10 +269,10 @@ as `rename <selected name>`.
 
 `search` matches the names of the visible entries in the current directory. `/` opens the
 command line as `search `, like `/` in vim and ranger, and `n` / `N` step through the matches,
-wrapping around. The last pattern is kept when changing directories. While a search is
-active, entries in the current column that do not match are drawn dim; `<Esc>` turns this off
-and the next search or `n` / `N` turns it back on, like vim's `:nohlsearch`. `ms` marks every
-match.
+wrapping around. The pattern stays active when changing directories, and while it is, entries
+in the current column that do not match are drawn dim. `<Esc>` clears the search, and so does
+cancelling the `/` prompt; `n`, `N` and `ms` then ask for a new search instead of reusing the
+old pattern. `ms` marks every match.
 
 - A pattern with `*` (any run of characters) or `?` (one character) must match the whole
   name: `*.rs`, `file?.txt`, `test_*`. `\` makes the next character literal (`why\?`).

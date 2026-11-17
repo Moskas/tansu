@@ -1917,7 +1917,7 @@ fn search_without_matches_or_previous_search_reports_errors() {
       .as_ref()
       .unwrap()
       .text
-      .contains("no previous search")
+      .contains("press / to search first")
   );
   app.run_command_line("search zzz");
   assert!(
@@ -1960,7 +1960,7 @@ fn row_dimmed(app: &App, row: u16) -> bool {
 }
 
 #[test]
-fn search_dims_non_matches_until_escape_and_n_brings_it_back() {
+fn search_dims_non_matches_until_escape_clears_it() {
   let (_tmp, work) = fixture();
   let mut app = new_app(&work);
   assert!(!row_dimmed(&app, 1), "no search, nothing dim");
@@ -1969,13 +1969,55 @@ fn search_dims_non_matches_until_escape_and_n_brings_it_back() {
   assert_eq!(selected(&app), "file2.txt");
   assert!(row_dimmed(&app, 0), "alpha does not match");
   assert!(!row_dimmed(&app, 4), "file10.txt matches");
-  press(&mut app, "<Esc>");
-  assert!(!row_dimmed(&app, 0));
-  press(&mut app, "n");
-  assert!(row_dimmed(&app, 0));
   // The cursor row is never dimmed, matching or not.
   press(&mut app, "gg");
   assert!(!row_dimmed(&app, 0));
+  press(&mut app, "<Esc>");
+  assert!(!row_dimmed(&app, 1));
+  assert!(
+    app
+      .message
+      .as_ref()
+      .unwrap()
+      .text
+      .contains("search cleared")
+  );
+  // The cleared search is gone, not just hidden.
+  press(&mut app, "n");
+  assert_eq!(selected(&app), "alpha");
+  assert!(!row_dimmed(&app, 1));
+  let message = app.message.as_ref().unwrap();
+  assert!(message.text.contains("press / to search first"));
+  assert_eq!(message.level, tansu::app::MessageLevel::Info);
+}
+
+#[test]
+fn cancelling_the_search_prompt_clears_the_previous_search() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  app.run_command_line("search *.txt");
+  pump(&mut app);
+  press(&mut app, "/");
+  press(&mut app, "<Esc>");
+  assert!(app.console.is_none());
+  assert!(!row_dimmed(&app, 0));
+  press(&mut app, "n");
+  assert_eq!(selected(&app), "file2.txt", "n does not move");
+  assert!(
+    app
+      .message
+      .as_ref()
+      .unwrap()
+      .text
+      .contains("press / to search first")
+  );
+
+  // Other prompts leave the search alone.
+  app.run_command_line("search *.txt");
+  pump(&mut app);
+  press(&mut app, ":<Esc>");
+  press(&mut app, "n");
+  assert_eq!(selected(&app), "file10.txt");
 }
 
 #[test]
@@ -1989,7 +2031,7 @@ fn ms_marks_every_match() {
       .as_ref()
       .unwrap()
       .text
-      .contains("no previous search")
+      .contains("press / to search first")
   );
   press(&mut app, "<Space>"); // alpha stays marked
   app.run_command_line("search *.txt");

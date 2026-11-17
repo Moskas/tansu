@@ -200,7 +200,7 @@ impl Action {
       Action::Search => "Search entries (fuzzy, or * and ? wildcards)",
       Action::SearchNext => "Jump to the next search match",
       Action::SearchPrev => "Jump to the previous search match",
-      Action::ClearSearch => "Stop dimming entries that do not match the search",
+      Action::ClearSearch => "Clear the search",
       Action::MarkMatches => "Mark every entry matching the search",
       Action::Reload => "Reload directory",
       Action::ToggleHelp => "Toggle this help",

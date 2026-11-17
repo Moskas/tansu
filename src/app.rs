@@ -33,6 +33,8 @@ const IMAGE_CACHE_LIMIT: usize = 8;
 const INFO_TIMEOUT: Duration = Duration::from_secs(4);
 /// Rows the cursor moves per mouse wheel step.
 const WHEEL_ROWS: isize = 3;
+/// Shown by `n`, `N` and `ms` when there is no search to act on.
+const NO_SEARCH: &str = "no active search; press / to search first";
 /// Longest gap between two clicks on the same entry that counts as a double click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Most bytes a text preview reads after being extended by scrolling.
@@ -293,11 +295,10 @@ pub struct App {
   repos: HashMap<PathBuf, Arc<RepoStatus>>,
   /// Directories whose next VCS scan must bypass the cache (after reload).
   vcs_force: HashSet<PathBuf>,
-  /// The last search as typed, and parsed. Kept across directory changes, like vim's.
+  /// The active search as typed, and parsed. Kept across directory changes, like vim's,
+  /// until cleared with `<Esc>` or by cancelling the search prompt. While it is set, entries
+  /// that do not match it are drawn dim.
   search: Option<(String, Pattern)>,
-  /// Entries that do not match the search are drawn dim. `<Esc>` turns this off and the next
-  /// search or `n`/`N` back on, like vim's `hlsearch`.
-  search_highlight: bool,
   /// Directory left by the last directory change, for `:cd -`.
   previous_dir: Option<PathBuf>,
   /// Entry to select once the given directory is listed again (after a rename).
@@ -356,7 +357,6 @@ impl App {
       repos: HashMap::new(),
       vcs_force: HashSet::new(),
       search: None,
-      search_highlight: false,
       previous_dir: None,
       select_after_load: None,
       last_click: None,
@@ -614,9 +614,16 @@ impl App {
       }
     }
     if let Some(editor) = &mut self.console {
+      let searching = editor.input().split_whitespace().next() == Some(console::SEARCH);
       match editor.handle_key(key) {
         EditOutcome::Continue => {}
-        EditOutcome::Cancel => self.console = None,
+        EditOutcome::Cancel => {
+          self.console = None;
+          // Backing out of a search ends the previous one too, so `n` does not revive it.
+          if searching {
+            self.clear_search();
+          }
+        }
         EditOutcome::Submit(line) => {
           self.console = None;
           self.run_command_line(&line);
@@ -876,11 +883,10 @@ impl App {
   /// From an entry that does not match, `n` goes to the best match and `N` to the worst.
   fn jump_to_match(&mut self, forward: Option<bool>) {
     let Some((text, _)) = &self.search else {
-      self.set_error("no previous search");
+      self.set_info(NO_SEARCH);
       return;
     };
     let text = text.clone();
-    self.search_highlight = true;
     let matches = self.search_matches();
     if matches.is_empty() {
       self.set_error(format!("no match for `{text}`"));
@@ -898,10 +904,18 @@ impl App {
     self.set_info(format!("match {}/{n} for `{text}`", k + 1));
   }
 
-  /// Whether `entry` is drawn dim for not matching the search being highlighted.
+  /// `<Esc>`: ends the active search; entries are no longer dimmed and `n`/`N` have nothing
+  /// to go to until the next search.
+  fn clear_search(&mut self) {
+    if self.search.take().is_some() {
+      self.set_info("search cleared");
+    }
+  }
+
+  /// Whether `entry` is drawn dim for not matching the active search.
   pub fn dimmed_by_search(&self, entry: &Entry) -> bool {
     match &self.search {
-      Some((_, pattern)) if self.search_highlight => pattern.score(&entry.name).is_none(),
+      Some((_, pattern)) => pattern.score(&entry.name).is_none(),
       _ => false,
     }
   }
@@ -909,7 +923,7 @@ impl App {
   /// `ms`: marks every visible entry matching the last search, keeping existing marks.
   fn mark_matches(&mut self) {
     let Some((text, _)) = &self.search else {
-      self.set_error("no previous search");
+      self.set_info(NO_SEARCH);
       return;
     };
     let text = text.clone();
@@ -1570,7 +1584,7 @@ impl App {
       }
       Action::SearchNext => self.jump_to_match(Some(true)),
       Action::SearchPrev => self.jump_to_match(Some(false)),
-      Action::ClearSearch => self.search_highlight = false,
+      Action::ClearSearch => self.clear_search(),
       Action::MarkMatches => self.mark_matches(),
       Action::Reload => self.reload(),
       Action::ToggleMetadata => {
