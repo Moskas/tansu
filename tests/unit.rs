@@ -1294,3 +1294,40 @@ mod search {
     assert!(score("été", "ÉTÉ.txt").is_some());
   }
 }
+
+mod trash {
+  use std::fs;
+
+  use tansu::fs::trash::trash;
+
+  #[test]
+  fn path_is_percent_encoded_and_the_trash_is_private() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("a b%é.txt");
+    fs::write(&file, "x").unwrap();
+    let root = tmp.path().join("Trash");
+    let target = trash(&file, &root).unwrap();
+    assert_eq!(target, root.join("files/a b%é.txt"));
+    let info = fs::read_to_string(root.join("info/a b%é.txt.trashinfo")).unwrap();
+    assert!(info.contains("/a%20b%25%C3%A9.txt\n"), "{info}");
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(&root).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o700);
+  }
+
+  #[test]
+  fn refuses_what_is_already_in_the_trash_and_missing_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("Trash");
+    fs::create_dir_all(root.join("files")).unwrap();
+    fs::write(root.join("files/old"), "").unwrap();
+    assert!(
+      trash(&root.join("files/old"), &root)
+        .unwrap_err()
+        .contains("already in the trash")
+    );
+    assert!(trash(&tmp.path().join("missing"), &root).is_err());
+    // Nothing was reserved for the failures.
+    assert_eq!(fs::read_dir(root.join("info")).map_or(0, |d| d.count()), 0);
+  }
+}

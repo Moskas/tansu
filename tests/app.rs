@@ -2010,3 +2010,251 @@ fn ms_marks_every_match() {
     .collect();
   assert_eq!(marked, vec!["alpha", "file2.txt", "file10.txt"]);
 }
+
+/// Like `new_app`, with the trash in `<tmp>/Trash` so tests never touch the real one.
+fn app_with_trash(tmp: &TempDir, start: &Path) -> App {
+  let mut app = new_app(start);
+  app.trash_dir = Some(tmp.path().join("Trash"));
+  app
+}
+
+#[test]
+fn delete_asks_first_and_any_other_key_cancels() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj");
+  assert_eq!(selected(&app), "file2.txt");
+  press(&mut app, "dD");
+  let confirm = app.confirm.clone().expect("asks before deleting");
+  assert_eq!(confirm.names, vec!["file2.txt"]);
+  let screen = render(&app);
+  assert!(screen[HEIGHT as usize - 1].contains("Delete `file2.txt` permanently? (y/N)"));
+  assert!(screen.iter().any(|l| l.contains("Delete permanently")));
+
+  for answer in ["n", "<Enter>", "<Esc>", "Y", "<C-y>"] {
+    press(&mut app, "dD");
+    press(&mut app, answer);
+    assert!(app.confirm.is_none());
+    assert!(
+      work.join("file2.txt").exists(),
+      "`{answer}` does not delete"
+    );
+  }
+}
+
+#[test]
+fn y_deletes_the_marked_entries_recursively() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "<Space>jj<Space>"); // alpha/, then <Space> moved down: file2.txt
+  press(&mut app, "dD");
+  assert_eq!(
+    app.confirm.as_ref().unwrap().names,
+    vec!["alpha/", "file2.txt"]
+  );
+  press(&mut app, "y");
+  assert!(!work.join("alpha").exists());
+  assert!(!work.join("file2.txt").exists());
+  assert!(work.join("blob.bin").exists());
+  assert!(
+    app
+      .message
+      .as_ref()
+      .unwrap()
+      .text
+      .contains("deleted 2 items")
+  );
+  assert!(app.marked_entries().is_empty());
+  assert!(!names(&app).contains(&"alpha".to_string()));
+}
+
+#[test]
+fn deleting_a_symlink_keeps_its_target() {
+  let (_tmp, work) = fixture();
+  std::os::unix::fs::symlink(work.join("alpha"), work.join("link")).unwrap();
+  let mut app = new_app(&work);
+  app.run_command_line("search link");
+  pump(&mut app);
+  assert_eq!(selected(&app), "link");
+  press(&mut app, "dD");
+  assert_eq!(app.confirm.as_ref().unwrap().names, vec!["link"]);
+  press(&mut app, "y");
+  assert!(work.join("link").symlink_metadata().is_err());
+  assert!(work.join("alpha/a.txt").exists());
+}
+
+#[test]
+fn every_way_of_deleting_asks() {
+  let (tmp, work) = fixture();
+  let mut app = app_with_trash(&tmp, &work);
+  app.run_command_line("delete");
+  assert!(app.confirm.is_some());
+  press(&mut app, "n");
+  app.run_command_line("trash");
+  assert!(app.confirm.as_ref().is_some_and(|c| c.trash));
+  // A click answers no.
+  mouse(
+    &mut app,
+    MouseEventKind::Down(MouseButton::Left),
+    CURRENT_X,
+    FIRST_ROW,
+  );
+  assert!(app.confirm.is_none());
+  assert!(work.join("alpha").exists());
+}
+
+#[test]
+fn trash_moves_entries_with_trash_info() {
+  let (tmp, work) = fixture();
+  let mut app = app_with_trash(&tmp, &work);
+  press(&mut app, "jjj");
+  press(&mut app, "dT");
+  let screen = render(&app);
+  assert!(screen[HEIGHT as usize - 1].contains("Move `file2.txt` to the trash? (y/N)"));
+  press(&mut app, "y");
+  assert!(!work.join("file2.txt").exists());
+  let trash = tmp.path().join("Trash");
+  assert_eq!(
+    fs::read_to_string(trash.join("files/file2.txt")).unwrap(),
+    "two\n"
+  );
+  let info = fs::read_to_string(trash.join("info/file2.txt.trashinfo")).unwrap();
+  assert!(info.starts_with("[Trash Info]\n"));
+  assert!(info.contains(&format!("Path={}\n", work.join("file2.txt").display())));
+  assert!(info.contains("DeletionDate=20"));
+  assert!(
+    app
+      .message
+      .as_ref()
+      .unwrap()
+      .text
+      .contains("trashed 1 item")
+  );
+
+  // A second file2.txt gets its own name in the trash.
+  fs::write(work.join("file2.txt"), "again\n").unwrap();
+  press(&mut app, "R");
+  app.run_command_line("search file2.txt");
+  pump(&mut app);
+  press(&mut app, "dTy");
+  assert_eq!(
+    fs::read_to_string(trash.join("files/file2.txt.2")).unwrap(),
+    "again\n"
+  );
+  assert!(trash.join("info/file2.txt.2.trashinfo").exists());
+}
+
+#[test]
+fn trash_without_a_trash_directory_refuses() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "dT");
+  assert!(app.confirm.is_none(), "refused before asking");
+  assert!(
+    app
+      .message
+      .as_ref()
+      .unwrap()
+      .text
+      .contains("no trash directory")
+  );
+  assert!(work.join("alpha").exists());
+}
+
+#[test]
+fn md_and_mf_create_and_select_entries() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "md");
+  assert_eq!(app.console.as_ref().unwrap().input(), "mkdir ");
+  press(&mut app, "<Esc>mf");
+  assert_eq!(app.console.as_ref().unwrap().input(), "touch ");
+  press(&mut app, "<Esc>");
+
+  app.run_command_line("mkdir new dir");
+  pump(&mut app);
+  assert!(work.join("new dir").is_dir());
+  assert_eq!(selected(&app), "new dir");
+
+  app.run_command_line("touch notes.md");
+  pump(&mut app);
+  assert!(work.join("notes.md").is_file());
+  assert_eq!(selected(&app), "notes.md");
+
+  // Missing parents are created; the directory leading to the file is selected.
+  app.run_command_line("touch deep/er/file.txt");
+  pump(&mut app);
+  assert!(work.join("deep/er/file.txt").is_file());
+  assert_eq!(selected(&app), "deep");
+}
+
+#[test]
+fn creating_an_existing_entry_is_an_error() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  app.run_command_line("mkdir alpha");
+  pump(&mut app);
+  assert!(
+    app
+      .message
+      .as_ref()
+      .unwrap()
+      .text
+      .contains("`alpha` already exists")
+  );
+  app.run_command_line("touch file2.txt");
+  pump(&mut app);
+  assert!(
+    app
+      .message
+      .as_ref()
+      .unwrap()
+      .text
+      .contains("`file2.txt` already exists")
+  );
+  assert_eq!(fs::read_to_string(work.join("file2.txt")).unwrap(), "two\n");
+  app.run_command_line("mkdir ./");
+  assert!(app.message.as_ref().unwrap().text.contains("invalid name"));
+}
+
+#[test]
+fn the_answer_deletes_what_was_listed_even_after_the_view_changed() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj");
+  press(&mut app, "dD");
+  // A directory change while the question is open (e.g. from a background event).
+  app.enter_dir(work.join("alpha"), None);
+  pump(&mut app);
+  assert_eq!(selected(&app), "a.txt");
+  press(&mut app, "y");
+  assert!(!work.join("file2.txt").exists());
+  assert!(work.join("alpha/a.txt").exists());
+  assert!(work.join("alpha/b.txt").exists());
+}
+
+#[test]
+fn mkdir_and_touch_expand_a_leading_tilde() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  app.home = Some(work.join("beta"));
+  app.run_command_line("mkdir ~/made");
+  pump(&mut app);
+  app.run_command_line("touch ~/made/file");
+  pump(&mut app);
+  assert!(work.join("beta/made/file").is_file());
+  assert!(!work.join("~").exists(), "no directory literally named ~");
+
+  app.home = None;
+  app.run_command_line("mkdir ~/other");
+  pump(&mut app);
+  assert!(
+    app
+      .message
+      .as_ref()
+      .unwrap()
+      .text
+      .contains("home directory unknown")
+  );
+  assert!(!work.join("~").exists());
+}

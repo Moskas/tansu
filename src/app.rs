@@ -94,6 +94,16 @@ pub enum Command {
     mode: PasteMode,
     overwrite: bool,
   },
+  /// Delete these paths for good, or move them into the trash at `trash`.
+  Delete {
+    paths: Vec<PathBuf>,
+    trash: Option<PathBuf>,
+  },
+  /// Create a directory (`dir`) or an empty file, with missing parents.
+  Create {
+    path: PathBuf,
+    dir: bool,
+  },
   /// Put this on the system clipboard.
   Clipboard(clipboard::Content),
   /// Run `script` with the user's shell in `cwd`. `program` names it in messages.
@@ -174,6 +184,41 @@ struct CachedPreview {
   level: u32,
 }
 
+/// A deletion waiting for the user to confirm it with `y`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Confirm {
+  /// Move to the trash instead of deleting for good.
+  pub trash: bool,
+  /// What will be deleted, fixed when the deletion was asked for, so nothing that happens
+  /// before the answer (a reload, a moved cursor) changes it.
+  pub paths: Vec<PathBuf>,
+  /// The names to list, directories ending in `/` (they go with their contents).
+  pub names: Vec<String>,
+}
+
+impl Confirm {
+  /// The question shown in the status bar.
+  pub fn question(&self) -> String {
+    let what = match self.paths.as_slice() {
+      [one] => format!("`{}`", display_name(one)),
+      many => items(many.len()),
+    };
+    if self.trash {
+      format!("Move {what} to the trash? (y/N)")
+    } else {
+      format!("Delete {what} permanently? (y/N)")
+    }
+  }
+}
+
+/// The last component of `path`, made safe to draw.
+pub fn display_name(path: &Path) -> String {
+  path
+    .file_name()
+    .map(|n| crate::fs::entry::sanitize(&n.to_string_lossy()))
+    .unwrap_or_default()
+}
+
 /// Entries copied (`yy`) or cut (`dd`), waiting to be pasted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileBuffer {
@@ -211,6 +256,10 @@ pub struct App {
   pub show_help: bool,
   /// The `:` command line, while it is open.
   pub console: Option<LineEditor>,
+  /// A deletion waiting for confirmation; the next key answers it.
+  pub confirm: Option<Confirm>,
+  /// The trash `dT` moves entries into (`$XDG_DATA_HOME/Trash`). `None` refuses to trash.
+  pub trash_dir: Option<PathBuf>,
   /// Tab completion candidates for the command line and the one currently shown.
   completion: Option<(Vec<String>, usize)>,
   /// Programs on `PATH`, scanned the first time `open_with` is completed.
@@ -281,6 +330,8 @@ impl App {
       cwd_symlinks: HashSet::new(),
       show_help: false,
       console: None,
+      confirm: None,
+      trash_dir: None,
       completion: None,
       programs: OnceCell::new(),
       show_metadata: false,
@@ -510,6 +561,8 @@ impl App {
         mode,
         results,
       } => self.on_pasted(dest, mode, results),
+      Event::Deleted { trashed, results } => self.on_deleted(trashed, results),
+      Event::Created { path, dir, result } => self.on_created(path, dir, result),
       Event::Clipboard(result) => {
         if let Err(e) = result {
           self.set_error(e);
@@ -534,6 +587,15 @@ impl App {
   }
 
   pub fn handle_key(&mut self, key: Key) {
+    // Answered before the keymap sees the key: `y` also starts the yank bindings.
+    if let Some(confirm) = self.confirm.take() {
+      if key.code == KeyCode::Char('y') && key.mods.is_empty() {
+        self.run_delete(confirm);
+      } else {
+        self.set_info("cancelled");
+      }
+      return;
+    }
     if self.show_help {
       // Any key closes the help overlay.
       self.show_help = false;
@@ -573,6 +635,14 @@ impl App {
   /// parent or preview column, by entering that column's directory), and a right click or
   /// a double click opens it.
   pub fn handle_mouse(&mut self, ev: MouseEvent) {
+    if self.confirm.is_some() {
+      // A click answers no; the wheel is ignored so it cannot move what is listed.
+      if matches!(ev.kind, MouseEventKind::Down(_)) {
+        self.confirm = None;
+        self.set_info("cancelled");
+      }
+      return;
+    }
     if self.show_help {
       // Any click closes the help overlay, like any key.
       if matches!(ev.kind, MouseEventKind::Down(_)) {
@@ -730,6 +800,7 @@ impl App {
       Some(Ok(ConsoleCommand::Zoxide(words))) => self.zoxide(words),
       Some(Ok(ConsoleCommand::Shell { flags, command })) => self.shell(&flags, &command),
       Some(Ok(ConsoleCommand::Search(pattern))) => self.start_search(pattern),
+      Some(Ok(ConsoleCommand::Create { name, dir })) => self.create(&name, dir),
     }
   }
 
@@ -1108,6 +1179,147 @@ impl App {
     });
   }
 
+  /// `dD` / `dT`: asks to delete (or trash) the marked entries, or the selection. Nothing
+  /// happens until the answer; every way of deleting goes through here.
+  fn ask_delete(&mut self, trash: bool) {
+    if trash && self.trash_dir.is_none() {
+      self.set_error("trash: no trash directory (XDG_DATA_HOME or HOME is unset)");
+      return;
+    }
+    let selection = self.selection();
+    if selection.is_empty() {
+      self.set_error("nothing selected");
+      return;
+    }
+    let paths = selection.iter().map(|e| e.path.clone()).collect();
+    // Symlinks to directories are removed themselves, so they are listed as plain entries.
+    let names = selection
+      .iter()
+      .map(|e| match e.kind {
+        crate::fs::EntryKind::Dir if !e.is_symlink() => format!("{}/", e.name),
+        _ => e.name.clone(),
+      })
+      .collect();
+    self.keymap.reset();
+    self.confirm = Some(Confirm {
+      trash,
+      paths,
+      names,
+    });
+  }
+
+  /// Carries out a confirmed deletion.
+  fn run_delete(&mut self, confirm: Confirm) {
+    let trash = if confirm.trash {
+      match &self.trash_dir {
+        Some(dir) => Some(dir.clone()),
+        None => {
+          self.set_error("trash: no trash directory (XDG_DATA_HOME or HOME is unset)");
+          return;
+        }
+      }
+    } else {
+      None
+    };
+    let verb = if confirm.trash {
+      "trashing"
+    } else {
+      "deleting"
+    };
+    self.set_info(format!("{verb} {}", items(confirm.paths.len())));
+    self.commands.push(Command::Delete {
+      paths: confirm.paths,
+      trash,
+    });
+  }
+
+  fn on_deleted(&mut self, trashed: bool, results: Vec<(PathBuf, Result<(), String>)>) {
+    let mut done = 0;
+    let mut errors = Vec::new();
+    let mut refresh = Vec::new();
+    for (path, result) in results {
+      if let Err(e) = result {
+        errors.push(e);
+        continue;
+      }
+      done += 1;
+      let gone = |p: &PathBuf| p.starts_with(&path);
+      self.dirs.retain(|p, _| !gone(p));
+      self.counts.retain(|p, _| !gone(p));
+      self.preview_cache.retain(|p, _| !gone(p));
+      self.marked.retain(|p| !gone(p));
+      if let Some(buffer) = &mut self.buffer {
+        buffer.paths.retain(|p| !gone(p));
+      }
+      if let Some(parent) = path.parent() {
+        refresh.push(parent.to_path_buf());
+      }
+    }
+    if self.buffer.as_ref().is_some_and(|b| b.paths.is_empty()) {
+      self.buffer = None;
+    }
+    let verb = if trashed { "trashed" } else { "deleted" };
+    match errors.as_slice() {
+      [] => self.set_info(format!("{verb} {}", items(done))),
+      [first, rest @ ..] => {
+        let more = if rest.is_empty() {
+          String::new()
+        } else {
+          format!(" (+{} more)", rest.len())
+        };
+        self.set_error(format!("{verb} {}, failed: {first}{more}", items(done)));
+      }
+    }
+    refresh.sort();
+    refresh.dedup();
+    for dir in refresh {
+      if dir == self.cwd || self.dirs.contains_key(&dir) {
+        self.vcs_force.insert(dir.clone());
+        self.request_dir(&dir, true);
+      }
+    }
+  }
+
+  /// `:mkdir` / `:touch`: creates `name`, a path relative to the current directory where a
+  /// leading `~` is the home directory, as in `:cd`.
+  fn create(&mut self, name: &str, dir: bool) {
+    let command = if dir { console::MKDIR } else { console::TOUCH };
+    if name.split('/').all(|c| c.is_empty() || c == ".") {
+      self.set_error(format!("{command}: invalid name `{name}`"));
+      return;
+    }
+    // Never create a directory literally named `~`: removing it later is a classic way to
+    // lose a home directory.
+    if name.starts_with('~') && self.home.is_none() {
+      self.set_error(format!("{command}: home directory unknown"));
+      return;
+    }
+    let path = crate::fs::path::resolve(name, &self.cwd, self.home.as_deref());
+    self.commands.push(Command::Create { path, dir });
+  }
+
+  fn on_created(&mut self, path: PathBuf, dir: bool, result: Result<(), String>) {
+    if let Err(e) = result {
+      self.set_error(e);
+      return;
+    }
+    let kind = if dir { "directory" } else { "file" };
+    self.set_info(format!("created {kind} {}", display_name(&path)));
+    // Select what was created, or the directory leading to it, when it is in view.
+    let cwd = self.cwd.clone();
+    if let Some(first) = path
+      .strip_prefix(&cwd)
+      .ok()
+      .and_then(|rel| rel.components().next())
+    {
+      let name = crate::fs::entry::sanitize(&first.as_os_str().to_string_lossy());
+      self.remembered.insert(cwd.clone(), name.clone());
+      self.select_after_load = Some((cwd.clone(), name));
+    }
+    self.vcs_force.insert(cwd.clone());
+    self.request_dir(&cwd, true);
+  }
+
   fn on_pasted(
     &mut self,
     dest: PathBuf,
@@ -1331,6 +1543,17 @@ impl App {
       Action::Cut => self.fill_buffer(PasteMode::Move),
       Action::Paste => self.paste(false),
       Action::PasteOverwrite => self.paste(true),
+      Action::Delete => self.ask_delete(false),
+      Action::Trash => self.ask_delete(true),
+      Action::MakeDir | Action::Touch => {
+        let command = if action == Action::MakeDir {
+          console::MKDIR
+        } else {
+          console::TOUCH
+        };
+        self.keymap.reset();
+        self.console = Some(LineEditor::with_input(format!("{command} ")));
+      }
       Action::ClearBuffer => {
         self.buffer = None;
         self.set_info("buffer cleared");

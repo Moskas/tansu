@@ -49,9 +49,12 @@ fn main() -> Result<()> {
   let (config, mut warnings) = Config::load(Config::default_path().as_deref());
   let (keymap, key_warnings) = Keymap::with_overrides(&config.keys);
   warnings.extend(key_warnings);
-  let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
+  let dirs = directories::BaseDirs::new();
+  let home = dirs.as_ref().map(|d| d.home_dir().to_path_buf());
 
   let mut app = App::new(config, keymap, start, select, meta::user_at_host(), home);
+  // $XDG_DATA_HOME/Trash, the home trash of the freedesktop.org specification.
+  app.trash_dir = dirs.as_ref().map(|d| d.data_dir().join("Trash"));
   if let Some(first) = warnings.first() {
     let more = warnings.len() - 1;
     let suffix = if more > 0 {

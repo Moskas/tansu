@@ -1,6 +1,7 @@
 //! Rendering. Everything here reads [`App`] state and draws into a buffer; no I/O happens.
 
 pub mod columns;
+pub mod confirm;
 pub mod devicons;
 pub mod header;
 pub mod help;
@@ -42,9 +43,10 @@ pub fn draw(buf: &mut Buffer, area: Rect, app: &App) {
   header::render(buf, header_area, app);
   columns::render(buf, body_area, app);
   status::render(buf, status_area, app);
-  if app.console.is_none() && !app.show_help {
+  if app.console.is_none() && !app.show_help && app.confirm.is_none() {
     which_key::render(buf, body_area, app);
   }
+  confirm::render(buf, body_area, app);
   if app.show_help {
     help::render(buf, area, app);
   }

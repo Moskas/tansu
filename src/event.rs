@@ -48,6 +48,17 @@ pub enum Event {
     mode: PasteMode,
     results: Vec<(PathBuf, Result<PathBuf, String>)>,
   },
+  /// Result of deleting (or trashing) each path.
+  Deleted {
+    trashed: bool,
+    results: Vec<(PathBuf, Result<(), String>)>,
+  },
+  /// Result of creating a directory (`dir`) or an empty file at `path`.
+  Created {
+    path: PathBuf,
+    dir: bool,
+    result: Result<(), String>,
+  },
   /// Result of writing to the system clipboard.
   Clipboard(Result<(), String>),
   /// A program run in the background (`:shell -s`) finished.

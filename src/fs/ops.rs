@@ -198,3 +198,41 @@ fn keep_times(target: &Path, meta: &Metadata) {
     let _ = file.set_times(times);
   }
 }
+
+/// Deletes `path` for good. A directory is removed with everything in it; a symlink is
+/// removed itself, never what it points to.
+pub fn remove(path: &Path) -> Result<(), String> {
+  let shown = path.file_name().map_or_else(
+    || path.display().to_string(),
+    |n| n.to_string_lossy().into_owned(),
+  );
+  let meta = fs::symlink_metadata(path).map_err(|e| format!("delete: {shown}: {e}"))?;
+  let removed = if meta.is_dir() {
+    // Does not follow symlinks inside the tree either.
+    fs::remove_dir_all(path)
+  } else {
+    fs::remove_file(path)
+  };
+  removed.map_err(|e| format!("delete: {shown}: {e}"))
+}
+
+/// Creates a directory (`dir`) or an empty file at `path`, with any missing parent
+/// directories, as ranger's `mkdir` and `touch` do. An existing entry is an error.
+pub fn create(path: &Path, dir: bool) -> Result<(), String> {
+  let command = if dir { "mkdir" } else { "touch" };
+  let shown = path.file_name().map_or_else(
+    || path.display().to_string(),
+    |n| n.to_string_lossy().into_owned(),
+  );
+  if fs::symlink_metadata(path).is_ok() {
+    return Err(format!("{command}: `{shown}` already exists"));
+  }
+  let err = |e: io::Error| format!("{command}: {shown}: {e}");
+  if dir {
+    return fs::create_dir_all(path).map_err(err);
+  }
+  if let Some(parent) = path.parent() {
+    fs::create_dir_all(parent).map_err(err)?;
+  }
+  fs::File::create_new(path).map(drop).map_err(err)
+}

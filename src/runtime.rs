@@ -128,22 +128,64 @@ pub fn paste(sources: &[PathBuf], dest: &Path, mode: PasteMode, overwrite: bool)
   }
 }
 
+/// Deletes each of `paths`, or moves it into the trash at `trash`, carrying on past failures.
+pub fn delete(paths: &[PathBuf], trash: Option<&Path>) -> Event {
+  let results = paths
+    .iter()
+    .map(|path| {
+      let result = match trash {
+        Some(root) => crate::fs::trash::trash(path, root).map(drop),
+        None => ops::remove(path),
+      };
+      (path.clone(), result)
+    })
+    .collect();
+  Event::Deleted {
+    trashed: trash.is_some(),
+    results,
+  }
+}
+
+/// Creates a directory or an empty file.
+pub fn create(path: &Path, dir: bool) -> Event {
+  Event::Created {
+    path: path.to_path_buf(),
+    dir,
+    result: ops::create(path, dir),
+  }
+}
+
 /// A paste request: sources, destination directory, mode and whether to overwrite.
 type PasteJob = (Vec<PathBuf>, PathBuf, PasteMode, bool);
 
-/// Starts the thread that runs pastes one after another, so two pastes never race for the
-/// same names and a large copy does not hold up the UI.
-fn spawn_paste_worker(tx: Sender<Event>) -> Sender<PasteJob> {
-  let (job_tx, job_rx) = mpsc::channel::<PasteJob>();
-  let spawned = thread::Builder::new().name("paste".into()).spawn(move || {
-    while let Ok((sources, dest, mode, overwrite)) = job_rx.recv() {
-      if tx.send(paste(&sources, &dest, mode, overwrite)).is_err() {
-        return;
+/// Work for the file operation thread.
+enum FileJob {
+  Paste(PasteJob),
+  /// Paths to delete, and the trash to move them into instead.
+  Delete(Vec<PathBuf>, Option<PathBuf>),
+}
+
+/// Starts the thread that runs pastes and deletions one after another, so they never race
+/// for the same names and a large copy or delete does not hold up the UI.
+fn spawn_file_worker(tx: Sender<Event>) -> Sender<FileJob> {
+  let (job_tx, job_rx) = mpsc::channel::<FileJob>();
+  let spawned = thread::Builder::new()
+    .name("file-ops".into())
+    .spawn(move || {
+      while let Ok(job) = job_rx.recv() {
+        let ev = match job {
+          FileJob::Paste((sources, dest, mode, overwrite)) => {
+            paste(&sources, &dest, mode, overwrite)
+          }
+          FileJob::Delete(paths, trash) => delete(&paths, trash.as_deref()),
+        };
+        if tx.send(ev).is_err() {
+          return;
+        }
       }
-    }
-  });
+    });
   if let Err(e) = spawned {
-    eprintln!("tansu: could not start paste worker: {e}");
+    eprintln!("tansu: could not start file worker: {e}");
   }
   job_tx
 }
@@ -318,7 +360,7 @@ pub struct Runtime {
   counts: LatestWorker<Vec<PathBuf>>,
   vcs: Sender<VcsRequest>,
   zoxide_add: Sender<PathBuf>,
-  paste: Sender<PasteJob>,
+  files: Sender<FileJob>,
   opener: String,
 }
 
@@ -350,14 +392,14 @@ impl Runtime {
     });
     let vcs = spawn_vcs_worker(tx.clone());
     let zoxide_add = spawn_zoxide_add_worker();
-    let paste = spawn_paste_worker(tx.clone());
+    let files = spawn_file_worker(tx.clone());
     Runtime {
       tx,
       previews,
       counts,
       vcs,
       zoxide_add,
-      paste,
+      files,
       opener,
     }
   }
@@ -455,7 +497,16 @@ impl Runtime {
         mode,
         overwrite,
       } => {
-        let _ = self.paste.send((sources, dest, mode, overwrite));
+        let _ = self
+          .files
+          .send(FileJob::Paste((sources, dest, mode, overwrite)));
+      }
+      Command::Delete { paths, trash } => {
+        let _ = self.files.send(FileJob::Delete(paths, trash));
+      }
+      // Creating is a single fast syscall or two, like a rename.
+      Command::Create { path, dir } => {
+        let _ = self.tx.send(create(&path, dir));
       }
       Command::Clipboard(content) => match clipboard::backend(&content) {
         Err(e) => return Some(e),
@@ -520,6 +571,8 @@ pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLim
       mode,
       overwrite,
     } => vec![paste(&sources, &dest, mode, overwrite)],
+    Command::Delete { paths, trash } => vec![delete(&paths, trash.as_deref())],
+    Command::Create { path, dir } => vec![create(&path, dir)],
     Command::Open(_)
     | Command::Spawn { .. }
     | Command::Shell { .. }

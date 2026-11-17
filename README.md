@@ -114,6 +114,10 @@ cargo test
 | `dd`                        | Cut the marked or selected    |
 | `pp`                        | Paste, never overwriting      |
 | `po`                        | Paste, overwriting            |
+| `dD`                        | Delete permanently (asks)     |
+| `dT`                        | Move to the trash (asks)      |
+| `md`                        | Create a directory (`:mkdir`) |
+| `mf`                        | Create a file (`:touch`)      |
 | `uy`, `ud`                  | Clear the copy/cut buffer     |
 | `yp`                        | Yank the selection's path     |
 | `yd`                        | Yank the current directory    |
@@ -193,6 +197,25 @@ and fall back to copy-and-delete across filesystems. A directory cannot be paste
 itself or its own subdirectories. Pastes run in the background, one at a time, and the
 pasted entry is selected when done.
 
+## Deleting and creating
+
+`dD` deletes the marked entries, or the selected one, for good; `dT` moves them to the trash.
+Both always ask first: the status bar shows the question and a list above it names every
+entry, directories with a trailing `/` (they go with everything in them). `y` confirms; any
+other key or a click cancels. The list is fixed when the question is asked, so nothing that
+happens before the answer changes what is deleted. Symlinks are removed themselves, never
+what they point to. `:delete` and `:trash` ask the same way.
+
+The trash is the freedesktop.org home trash (`$XDG_DATA_HOME/Trash`, usually
+`~/.local/share/Trash`), so desktop file managers and `trash-restore` can restore what tansu
+trashed. Entries are renamed into it, never copied: one on another filesystem than the trash
+is refused, and `dD` has to be used instead.
+
+`md` opens the command line as `mkdir ` and `mf` as `touch `. The name may contain spaces and
+`/`, and a leading `~` is the home directory, as in `:cd`; missing parent directories are
+created, as in ranger. An existing entry is never
+replaced. The new entry (or the directory leading to it) is selected afterwards.
+
 ## Clipboard
 
 The `y` keys write to the system clipboard. `yp` yanks the selection's full path, `yd` the
@@ -227,6 +250,9 @@ or `<C-c>` cancels, and `<BS>` on an empty line closes it. Editing keys: `<Left>
 | `shell`                            | Open the command line as `shell `                    |
 | `search <pattern>`                 | Select the best match in the current directory       |
 | `sort <type>`                      | Sort by `name`, `size`, `mtime` or `ctime`           |
+| `mkdir <name>`                     | Create a directory, with missing parents             |
+| `touch <name>`                     | Create an empty file, with missing parents           |
+| `mkdir`, `touch`                   | Open the command line as `mkdir ` or `touch `        |
 | `<action>`                         | Any action name below, e.g. `open`, `reload`, `quit` |
 | `q`                                | Quit                                                 |
 
@@ -425,8 +451,8 @@ Action names: `move_up`, `move_down`, `move_top`, `move_bottom`, `half_page_up`,
 `half_page_down`, `page_up`, `page_down`, `preview_up`, `preview_down`, `go_parent`, `open`,
 `go_home`, `toggle_hidden`, `toggle_metadata`, `rename`, `shell`, `search`, `search_next`,
 `search_prev`, `clear_search`, `mark_matches`, `sort name`, `sort size`, `sort mtime`,
-`sort ctime`, `copy`, `cut`, `paste`,
-`paste_overwrite`, `clear_buffer`, `yank_path`, `yank_dir`, `yank_name`,
+`sort ctime`, `copy`, `cut`, `paste`, `paste_overwrite`, `delete`, `trash`, `mkdir`, `touch`,
+`clear_buffer`, `yank_path`, `yank_dir`, `yank_name`,
 `yank_name_without_ext`, `yank_file`, `reload`, `toggle_help`, `command_line`, `quit`.
 
 ## Architecture
@@ -453,7 +479,7 @@ with events.
 | `console.rs`  | Command-line editor and command parser                             |
 | `search.rs`   | Search patterns: wildcards, fuzzy matching and ranking             |
 | `clipboard.rs`| System clipboard through wl-copy, xclip, xsel or OSC 52            |
-| `fs/`         | Entries, listing, natural sort, metadata, paste ops (no UI types)  |
+| `fs/`         | Entries, listing, sort, metadata, file ops, trash (no UI types)    |
 | `preview/`    | `Previewer` trait, registry, built-in previewers, ANSI parsing     |
 | `graphics.rs` | Encodes images for the terminal graphics protocol                  |
 | `vcs/`        | Git status via the `git` CLI, per-path and per-directory status    |

@@ -1,6 +1,6 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthChar;
@@ -23,6 +23,16 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App) {
   if let Some(editor) = &app.console {
     let (text, _) = console_view(editor, area.width);
     Line::styled(text, base).render(area, buf);
+    return;
+  }
+  if let Some(confirm) = &app.confirm {
+    let color = if confirm.trash {
+      theme.status_fg.0
+    } else {
+      theme.error.0
+    };
+    let style = Style::new().fg(color).add_modifier(Modifier::BOLD);
+    Line::styled(confirm.question(), style).render(area, buf);
     return;
   }
   let binary = app.config.binary_size_prefix;

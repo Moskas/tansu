@@ -31,6 +31,10 @@ pub enum Action {
   Cut,
   Paste,
   PasteOverwrite,
+  Delete,
+  Trash,
+  MakeDir,
+  Touch,
   ClearBuffer,
   YankPath,
   YankDir,
@@ -50,7 +54,7 @@ pub enum Action {
 }
 
 impl Action {
-  pub const ALL: [Action; 43] = [
+  pub const ALL: [Action; 47] = [
     Action::MoveUp,
     Action::MoveDown,
     Action::MoveTop,
@@ -78,6 +82,10 @@ impl Action {
     Action::Cut,
     Action::Paste,
     Action::PasteOverwrite,
+    Action::Delete,
+    Action::Trash,
+    Action::MakeDir,
+    Action::Touch,
     Action::ClearBuffer,
     Action::YankPath,
     Action::YankDir,
@@ -126,6 +134,10 @@ impl Action {
       Action::Cut => "cut",
       Action::Paste => "paste",
       Action::PasteOverwrite => "paste_overwrite",
+      Action::Delete => "delete",
+      Action::Trash => "trash",
+      Action::MakeDir => "mkdir",
+      Action::Touch => "touch",
       Action::ClearBuffer => "clear_buffer",
       Action::YankPath => "yank_path",
       Action::YankDir => "yank_dir",
@@ -174,6 +186,10 @@ impl Action {
       Action::Cut => "Cut the marked entries (or selection) into the buffer",
       Action::Paste => "Paste the buffer here, never overwriting",
       Action::PasteOverwrite => "Paste the buffer here, overwriting",
+      Action::Delete => "Delete the marked entries (or selection) permanently",
+      Action::Trash => "Move the marked entries (or selection) to the trash",
+      Action::MakeDir => "Create a directory",
+      Action::Touch => "Create an empty file",
       Action::ClearBuffer => "Clear the copy/cut buffer",
       Action::YankPath => "Yank the selection's path",
       Action::YankDir => "Yank the current directory's path",

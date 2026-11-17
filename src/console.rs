@@ -187,6 +187,9 @@ pub enum ConsoleCommand {
   Shell { flags: String, command: String },
   /// Search the current directory for this pattern, taken verbatim (spaces included).
   Search(String),
+  /// Create a directory (`dir`) or an empty file at this path, relative to the current
+  /// directory and taken verbatim.
+  Create { name: String, dir: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -229,6 +232,11 @@ pub const SHELL: &str = "shell";
 /// command line as `search `.
 pub const SEARCH: &str = "search";
 
+/// Names of the commands that create a directory and an empty file. Without a name they open
+/// the command line as `mkdir ` / `touch `.
+pub const MKDIR: &str = "mkdir";
+pub const TOUCH: &str = "touch";
+
 /// Flag of `open_with` that detaches the program instead of suspending tansu for it.
 pub const DETACH_FLAG: &str = "-d";
 
@@ -244,6 +252,19 @@ pub fn parse(line: &str) -> Option<Result<ConsoleCommand, ConsoleError>> {
       ConsoleCommand::Action(Action::Rename)
     } else {
       ConsoleCommand::Rename(new_name.to_string())
+    }));
+  }
+  if name == MKDIR || name == TOUCH {
+    // Names may contain spaces, so the rest of the line is the name.
+    let dir = name == MKDIR;
+    let new = rest_after_command(line).trim_end();
+    return Some(Ok(match (new.is_empty(), dir) {
+      (true, true) => ConsoleCommand::Action(Action::MakeDir),
+      (true, false) => ConsoleCommand::Action(Action::Touch),
+      (false, _) => ConsoleCommand::Create {
+        name: new.to_string(),
+        dir,
+      },
     }));
   }
   if name == SEARCH {
@@ -313,10 +334,11 @@ fn command_names() -> Vec<String> {
   let mut names: Vec<String> = Action::ALL
     .iter()
     .map(|a| a.name())
-    .filter(|n| !n.contains(' ') && ![RENAME, SEARCH, SHELL].contains(n))
+    .filter(|n| !n.contains(' ') && ![MKDIR, RENAME, SEARCH, SHELL, TOUCH].contains(n))
     .map(str::to_string)
     .collect();
-  names.extend([CD, OPEN_WITH, RENAME, SEARCH, SHELL, SORT, Z].map(|n| format!("{n} ")));
+  let with_argument = [CD, MKDIR, OPEN_WITH, RENAME, SEARCH, SHELL, SORT, TOUCH, Z];
+  names.extend(with_argument.map(|n| format!("{n} ")));
   names.sort();
   names.dedup();
   names

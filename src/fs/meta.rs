@@ -95,14 +95,8 @@ pub fn human_size_compact(bytes: u64, binary: bool) -> String {
 
 /// Formats a Unix timestamp as local `YYYY-MM-DD HH:MM`.
 pub fn format_mtime(secs: i64) -> String {
-  let t = secs as libc::time_t;
-  // SAFETY: `tm` is plain data; localtime_r only writes into it and is thread-safe.
-  let tm = unsafe {
-    let mut tm: libc::tm = std::mem::zeroed();
-    if libc::localtime_r(&t, &mut tm).is_null() {
-      return "????-??-?? ??:??".to_string();
-    }
-    tm
+  let Some(tm) = local_time(secs) else {
+    return "????-??-?? ??:??".to_string();
   };
   format!(
     "{:04}-{:02}-{:02} {:02}:{:02}",
@@ -112,6 +106,31 @@ pub fn format_mtime(secs: i64) -> String {
     tm.tm_hour,
     tm.tm_min
   )
+}
+
+/// Formats a Unix timestamp as local `YYYY-MM-DDThh:mm:ss` (ISO 8601 without a zone).
+pub fn format_datetime(secs: i64) -> String {
+  let Some(tm) = local_time(secs) else {
+    return "1970-01-01T00:00:00".to_string();
+  };
+  format!(
+    "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+    tm.tm_year + 1900,
+    tm.tm_mon + 1,
+    tm.tm_mday,
+    tm.tm_hour,
+    tm.tm_min,
+    tm.tm_sec
+  )
+}
+
+fn local_time(secs: i64) -> Option<libc::tm> {
+  let t = secs as libc::time_t;
+  // SAFETY: `tm` is plain data; localtime_r only writes into it and is thread-safe.
+  unsafe {
+    let mut tm: libc::tm = std::mem::zeroed();
+    (!libc::localtime_r(&t, &mut tm).is_null()).then_some(tm)
+  }
 }
 
 /// Loads the local timezone once so later `format_mtime` calls do not touch the filesystem.
