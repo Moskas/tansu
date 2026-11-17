@@ -2338,3 +2338,23 @@ fn playlists_render_as_numbered_entries_and_scroll() {
     "details and rule scroll away"
   );
 }
+
+#[test]
+fn cd_and_cz_open_the_command_line_for_cd_and_zoxide() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "c");
+  let screen = render(&app).join("\n");
+  assert!(
+    screen.contains("Change directory"),
+    "which-key lists cd:\n{screen}"
+  );
+  assert!(screen.contains("zoxide"), "which-key lists cz:\n{screen}");
+  press(&mut app, "d");
+  assert_eq!(app.console.as_ref().unwrap().input(), "cd ");
+  press(&mut app, "alpha<Enter>");
+  assert_eq!(app.cwd, work.join("alpha"));
+
+  press(&mut app, "cz");
+  assert_eq!(app.console.as_ref().unwrap().input(), "z ");
+}

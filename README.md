@@ -166,6 +166,8 @@ cargo test
 | `<PageDown>` / `<PageUp>`   | Page down / up                |
 | `<C-j>` / `<C-k>`           | Scroll the preview down / up  |
 | `~`                         | Go to home directory          |
+| `cd`                        | Change directory (`:cd `)     |
+| `cz`                        | zoxide jump (`:z `)           |
 | `.`                         | Toggle hidden files           |
 | `i`                         | Toggle file metadata / preview|
 | `on`                        | Sort by name                  |
@@ -551,12 +553,11 @@ vcs_commit = "#fabd2f"
 
 Action names: `move_up`, `move_down`, `move_top`, `move_bottom`, `half_page_up`,
 `half_page_down`, `page_up`, `page_down`, `preview_up`, `preview_down`, `go_parent`, `open`,
-`go_home`, `toggle_hidden`, `toggle_metadata`, `rename`, `shell`, `search`, `search_next`,
-`search_prev`, `clear_search`, `mark_matches`, `sort name`, `sort size`, `sort mtime`,
-`sort ctime`, `copy`, `cut`, `paste`, `paste_overwrite`, `delete`, `trash`, `mkdir`, `touch`,
-`clear_buffer`, `yank_path`, `yank_dir`, `yank_name`,
+`go_home`, `prompt_cd`, `prompt_z`, `toggle_hidden`, `toggle_metadata`, `rename`, `shell`,
+`search`, `search_next`, `search_prev`, `clear_search`, `mark_matches`, `sort name`,
+`sort size`, `sort mtime`, `sort ctime`, `copy`, `cut`, `paste`, `paste_overwrite`, `delete`,
+`trash`, `mkdir`, `touch`, `clear_buffer`, `yank_path`, `yank_dir`, `yank_name`,
 `yank_name_without_ext`, `yank_file`, `reload`, `toggle_help`, `command_line`, `quit`.
-
 ## Architecture
 
 Data flows one way: input event -> `Action` (via the keymap) -> `App` state update ->

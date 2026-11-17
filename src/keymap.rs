@@ -249,6 +249,8 @@ pub const DEFAULT_BINDINGS: &[(&str, Action)] = &[
   ("<C-j>", Action::PreviewDown),
   ("<C-k>", Action::PreviewUp),
   ("~", Action::GoHome),
+  ("cd", Action::PromptCd),
+  ("cz", Action::PromptZ),
   (".", Action::ToggleHidden),
   ("i", Action::ToggleMetadata),
   ("on", Action::Sort(SortKey::Name)),

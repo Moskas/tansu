@@ -850,10 +850,10 @@ impl App {
     });
   }
 
-  /// Opens the command line as `shell `, ready for a command.
-  fn prompt_shell(&mut self) {
+  /// Opens the command line as `command `, ready for its argument.
+  fn prompt(&mut self, command: &str) {
     self.keymap.reset();
-    self.console = Some(LineEditor::with_input(format!("{} ", console::SHELL)));
+    self.console = Some(LineEditor::with_input(format!("{command} ")));
   }
 
   /// `:search`: remembers the pattern and jumps to the best match.
@@ -1537,6 +1537,8 @@ impl App {
         Some(home) => self.enter_dir(home, None),
         None => self.set_error("home directory unknown"),
       },
+      Action::PromptCd => self.prompt(console::CD),
+      Action::PromptZ => self.prompt(console::Z),
       Action::ToggleHidden => {
         self.show_hidden = !self.show_hidden;
         let want = self.selected().map(|e| e.name.clone());
@@ -1559,15 +1561,8 @@ impl App {
       Action::PasteOverwrite => self.paste(true),
       Action::Delete => self.ask_delete(false),
       Action::Trash => self.ask_delete(true),
-      Action::MakeDir | Action::Touch => {
-        let command = if action == Action::MakeDir {
-          console::MKDIR
-        } else {
-          console::TOUCH
-        };
-        self.keymap.reset();
-        self.console = Some(LineEditor::with_input(format!("{command} ")));
-      }
+      Action::MakeDir => self.prompt(console::MKDIR),
+      Action::Touch => self.prompt(console::TOUCH),
       Action::ClearBuffer => {
         self.buffer = None;
         self.set_info("buffer cleared");
@@ -1577,11 +1572,8 @@ impl App {
       | Action::YankName
       | Action::YankNameWithoutExt
       | Action::YankFile => self.yank(action),
-      Action::Shell => self.prompt_shell(),
-      Action::Search => {
-        self.keymap.reset();
-        self.console = Some(LineEditor::with_input(format!("{} ", console::SEARCH)));
-      }
+      Action::Shell => self.prompt(console::SHELL),
+      Action::Search => self.prompt(console::SEARCH),
       Action::SearchNext => self.jump_to_match(Some(true)),
       Action::SearchPrev => self.jump_to_match(Some(false)),
       Action::ClearSearch => self.clear_search(),

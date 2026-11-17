@@ -20,6 +20,8 @@ pub enum Action {
   GoParent,
   Open,
   GoHome,
+  PromptCd,
+  PromptZ,
   ToggleHidden,
   ToggleMetadata,
   Sort(SortKey),
@@ -54,7 +56,7 @@ pub enum Action {
 }
 
 impl Action {
-  pub const ALL: [Action; 47] = [
+  pub const ALL: [Action; 49] = [
     Action::MoveUp,
     Action::MoveDown,
     Action::MoveTop,
@@ -68,6 +70,8 @@ impl Action {
     Action::GoParent,
     Action::Open,
     Action::GoHome,
+    Action::PromptCd,
+    Action::PromptZ,
     Action::ToggleHidden,
     Action::ToggleMetadata,
     Action::Sort(SortKey::Name),
@@ -120,6 +124,8 @@ impl Action {
       Action::GoParent => "go_parent",
       Action::Open => "open",
       Action::GoHome => "go_home",
+      Action::PromptCd => "prompt_cd",
+      Action::PromptZ => "prompt_z",
       Action::ToggleHidden => "toggle_hidden",
       Action::ToggleMetadata => "toggle_metadata",
       Action::Sort(SortKey::Name) => "sort name",
@@ -172,6 +178,8 @@ impl Action {
       Action::GoParent => "Go to parent directory",
       Action::Open => "Enter directory / open file",
       Action::GoHome => "Go to home directory",
+      Action::PromptCd => "Change directory (opens :cd)",
+      Action::PromptZ => "Jump to a directory with zoxide (opens :z)",
       Action::ToggleHidden => "Toggle hidden files",
       Action::ToggleMetadata => "Toggle file metadata / preview",
       Action::Sort(SortKey::Name) => "Sort by name",
