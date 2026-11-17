@@ -669,3 +669,82 @@ fn metadata_toggle_replaces_file_previews_but_not_directory_listings() {
   press(&mut app, "Gi");
   assert!(!app.show_metadata);
 }
+
+#[test]
+fn command_line_open_with_queues_foreground_or_detached_program() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjjj"); // file10.txt
+  press(&mut app, ":open_with nvim -R");
+  press_keys_without_pump(&mut app, "<Enter>");
+  assert!(app.console.is_none());
+  assert_eq!(
+    app.take_commands(),
+    vec![Command::Spawn {
+      argv: vec!["nvim".into(), "-R".into()],
+      path: work.join("file10.txt"),
+      foreground: true,
+    }]
+  );
+  // Keys typed into the command line are not bindings: `j` did not move the cursor.
+  assert_eq!(selected(&app), "file10.txt");
+
+  // Directories are passed to the program, not entered.
+  press(&mut app, "gg");
+  press(&mut app, ":open_with -d thunar");
+  press_keys_without_pump(&mut app, "<Enter>");
+  assert_eq!(app.cwd, work);
+  assert_eq!(
+    app.take_commands(),
+    vec![Command::Spawn {
+      argv: vec!["thunar".into()],
+      path: work.join("alpha"),
+      foreground: false,
+    }]
+  );
+}
+
+#[test]
+fn command_line_runs_actions_and_reports_errors() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjjj");
+  press(&mut app, ":open");
+  press_keys_without_pump(&mut app, "<Enter>");
+  assert_eq!(
+    app.take_commands(),
+    vec![Command::Open(work.join("file10.txt"))]
+  );
+  press(&mut app, ":nope<Enter>");
+  assert_eq!(app.message.as_ref().unwrap().text, "unknown command `nope`");
+  press(&mut app, ":toggle_hidden<Enter>");
+  assert!(app.show_hidden);
+  press(&mut app, ":q<Enter>");
+  assert!(app.should_quit);
+}
+
+#[test]
+fn command_line_cancel_runs_nothing() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, ":quit<Esc>");
+  assert!(app.console.is_none());
+  assert!(!app.should_quit);
+  press(&mut app, ":<BS>");
+  assert!(app.console.is_none());
+  assert!(app.take_commands().is_empty());
+}
+
+#[test]
+fn command_line_is_drawn_in_the_status_row() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, ":open_with less");
+  let lines = render(&app);
+  assert_eq!(lines[HEIGHT as usize - 1].trim_end(), ":open_with less");
+  let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
+  terminal.draw(|f| tansu::ui::render(f, &app)).unwrap();
+  terminal
+    .backend_mut()
+    .assert_cursor_position((15, HEIGHT - 1));
+}

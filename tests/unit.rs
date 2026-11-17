@@ -6,11 +6,14 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use tansu::action::Action;
 use tansu::config::Config;
+use tansu::console::{ConsoleCommand, ConsoleError, EditOutcome, LineEditor, parse};
 use tansu::fs::meta::{format_permissions, human_size, human_size_compact};
 use tansu::fs::sort::natural_cmp;
 use tansu::keymap::{Key, KeyParseError, KeyResult, Keymap, parse_sequence};
 use tansu::nav::{Cursor, ScrollPos, passive_offset};
+use tansu::opener::run_foreground;
 use tansu::ui::layout::split_columns;
+use tansu::ui::status::console_view;
 use tansu::ui::text::{display_width, truncate};
 
 // ---- sorting ----
@@ -604,4 +607,121 @@ fn cursor_is_centered_when_the_view_is_shorter_than_twice_the_margin() {
   assert_eq!(c.offset, 0, "no scrolling above the first entry");
   c.set(245, 246, 13, 8);
   assert_eq!(c.offset, 233, "no empty space below the last entry");
+}
+
+// ---- command line ----
+
+fn edit(keys: &str) -> (LineEditor, EditOutcome) {
+  let mut editor = LineEditor::new();
+  let mut outcome = EditOutcome::Continue;
+  for key in parse_sequence(keys).unwrap() {
+    outcome = editor.handle_key(key);
+  }
+  (editor, outcome)
+}
+
+#[test]
+fn line_editor_inserts_and_moves_by_chars() {
+  let (e, _) = edit("ab<Left>X<Home>Y<End>Z");
+  assert_eq!(e.input(), "YaXbZ");
+  assert_eq!(e.cursor(), 5);
+  // Multibyte text is edited per char, never split inside one.
+  let (e, _) = edit("好き<Left><BS>歌<Right><Del>x");
+  assert_eq!(e.input(), "歌きx");
+  assert_eq!(e.before_cursor(), "歌きx");
+}
+
+#[test]
+fn line_editor_kill_keys() {
+  let (e, _) = edit("open_with nvim  <C-w>");
+  assert_eq!(e.input(), "open_with ");
+  let (e, _) = edit("abc def<Left><Left><C-u>");
+  assert_eq!(e.input(), "ef");
+  assert_eq!(e.cursor(), 0);
+  let (e, _) = edit("abc def<Home><Right><C-k>");
+  assert_eq!(e.input(), "a");
+}
+
+#[test]
+fn line_editor_submit_and_cancel() {
+  assert_eq!(
+    edit("reload<Enter>").1,
+    EditOutcome::Submit("reload".into())
+  );
+  assert_eq!(edit("abc<Esc>").1, EditOutcome::Cancel);
+  assert_eq!(edit("abc<C-c>").1, EditOutcome::Cancel);
+  // Backspace only leaves once the line is empty.
+  assert_eq!(edit("a<BS>").1, EditOutcome::Continue);
+  assert_eq!(edit("a<BS><BS>").1, EditOutcome::Cancel);
+}
+
+#[test]
+fn parses_console_commands() {
+  let open_with = |argv: &[&str], detach| {
+    Some(Ok(ConsoleCommand::OpenWith {
+      argv: argv.iter().map(|s| s.to_string()).collect(),
+      detach,
+    }))
+  };
+  assert_eq!(parse("   "), None);
+  assert_eq!(
+    parse("open"),
+    Some(Ok(ConsoleCommand::Action(Action::Open)))
+  );
+  assert_eq!(
+    parse(" reload "),
+    Some(Ok(ConsoleCommand::Action(Action::Reload)))
+  );
+  assert_eq!(parse("q"), Some(Ok(ConsoleCommand::Action(Action::Quit))));
+  assert_eq!(
+    parse("open_with nvim -R"),
+    open_with(&["nvim", "-R"], false)
+  );
+  assert_eq!(
+    parse("open_with -d mpv --fs"),
+    open_with(&["mpv", "--fs"], true)
+  );
+  assert_eq!(
+    parse("open_with"),
+    Some(Err(ConsoleError::MissingProgram("open_with")))
+  );
+  assert_eq!(
+    parse("open_with -d"),
+    Some(Err(ConsoleError::MissingProgram("open_with")))
+  );
+  assert_eq!(
+    parse("frobnicate"),
+    Some(Err(ConsoleError::Unknown("frobnicate".into())))
+  );
+  assert!(matches!(
+    parse("reload now"),
+    Some(Err(ConsoleError::UnexpectedArgument { .. }))
+  ));
+}
+
+#[test]
+fn console_view_scrolls_to_keep_cursor_visible() {
+  let (e, _) = edit("abcdef");
+  assert_eq!(console_view(&e, 20), (":abcdef".to_string(), 7));
+  // 7 cells of text plus the cursor cell do not fit in 5: the start scrolls away.
+  assert_eq!(console_view(&e, 5), ("cdef".to_string(), 4));
+  let (e, _) = edit("abcdef<Home>");
+  assert_eq!(console_view(&e, 5), (":abcd".to_string(), 1));
+  // Wide characters count two cells.
+  let (e, _) = edit("好きな歌");
+  assert_eq!(console_view(&e, 6), ("な歌".to_string(), 4));
+}
+
+// ---- opener ----
+
+#[test]
+fn foreground_program_gets_the_path_as_its_last_argument() {
+  let tmp = tempfile::tempdir().unwrap();
+  let path = tmp.path().join("name with spaces & $chars");
+  std::fs::write(&path, "").unwrap();
+  let argv = ["test".to_string(), "-f".to_string()];
+  assert!(run_foreground(&argv, &path).unwrap().success());
+  let missing = tmp.path().join("missing");
+  assert!(!run_foreground(&argv, &missing).unwrap().success());
+  assert!(run_foreground(&["tansu-no-such-program".to_string()], &path).is_err());
 }

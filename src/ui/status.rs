@@ -3,9 +3,11 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
+use unicode_width::UnicodeWidthChar;
 
-use super::text::display_width;
+use super::text::{clip, display_width};
 use crate::app::{App, MessageLevel};
+use crate::console::LineEditor;
 use crate::fs::FileClass;
 use crate::fs::meta::{format_mtime, format_permissions, human_size_compact};
 use crate::ui::columns::{entry_info, mark_color};
@@ -18,6 +20,11 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App) {
   }
   let theme = &app.config.theme;
   let base = Style::new().fg(theme.status_fg.0);
+  if let Some(editor) = &app.console {
+    let (text, _) = console_view(editor, area.width);
+    Line::styled(text, base).render(area, buf);
+    return;
+  }
   let binary = app.config.binary_size_prefix;
 
   let len = app.visible_len();
@@ -133,4 +140,26 @@ fn fitting(segments: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
     out.push(seg);
   }
   out
+}
+
+/// The command line as shown in a row of `width` cells: `:` and the input, scrolled so the
+/// cursor stays visible. Returns the text and the cursor's column within the row.
+pub fn console_view(editor: &LineEditor, width: u16) -> (String, u16) {
+  let width = usize::from(width);
+  let full = format!(":{}", editor.input());
+  let cursor = 1 + display_width(editor.before_cursor());
+  // Leave a cell for the cursor itself at the end of the row.
+  let excess = (cursor + 1).saturating_sub(width);
+  let mut dropped = 0;
+  let mut start = 0;
+  for (i, c) in full.char_indices() {
+    if dropped >= excess {
+      start = i;
+      break;
+    }
+    dropped += UnicodeWidthChar::width(c).unwrap_or(0);
+    start = i + c.len_utf8();
+  }
+  let text = clip(&full[start..], width).to_string();
+  (text, (cursor - dropped) as u16)
 }

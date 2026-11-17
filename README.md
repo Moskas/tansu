@@ -98,10 +98,32 @@ cargo test
 | `i`                         | Toggle file metadata / preview|
 | `r`                         | Reload directory              |
 | `?`                         | Toggle help overlay           |
+| `:`                         | Open the command line         |
 | `q`, `<C-c>`                | Quit                          |
 
 Files are opened with the configured opener (default `xdg-open`), detached from the
 terminal so tansu stays usable.
+
+## Command line
+
+`:` opens a command line in the status bar, like ranger and vim. `<Enter>` runs it, `<Esc>`
+or `<C-c>` cancels, and `<BS>` on an empty line closes it. Editing keys: `<Left>`/`<Right>`,
+`<Home>`/`<End>` (also `<C-a>`/`<C-e>`), `<Del>`, `<C-w>` (delete word), `<C-u>`/`<C-k>`
+(delete to start / end).
+
+| Command                            | Effect                                               |
+|------------------------------------|------------------------------------------------------|
+| `open_with <program> [args...]`    | Run the program on the selection in the foreground   |
+| `open_with -d <program> [args...]` | Run the program on the selection, detached           |
+| `<action>`                         | Any action name below, e.g. `open`, `reload`, `quit` |
+| `q`                                | Quit                                                 |
+
+The selected path is appended as the last argument. Arguments are split on whitespace; there
+is no shell quoting or expansion. A foreground program (`:open_with nvim`, `:open_with less`)
+gets the terminal while tansu waits, and the current directory is reloaded when it exits; a
+non-zero exit status is reported in the status line. Use `-d` for GUI programs
+(`:open_with -d mpv`) so tansu stays usable. `open_with` on a directory passes the directory
+instead of entering it.
 
 ## Configuration
 
@@ -202,7 +224,7 @@ vcs_commit = "#fabd2f"
 Action names: `move_up`, `move_down`, `move_top`, `move_bottom`, `half_page_up`,
 `half_page_down`, `page_up`, `page_down`, `go_parent`, `open`, `go_home`, `toggle_hidden`,
 `toggle_metadata`,
-`reload`, `toggle_help`, `quit`.
+`reload`, `toggle_help`, `command_line`, `quit`.
 
 ## Architecture
 
@@ -219,11 +241,12 @@ file) that the runtime executes in the background and answers with events.
 | `action.rs`   | `Action` enum                                                      |
 | `keymap.rs`   | Key notation parser, binding table, multi-key sequences            |
 | `config.rs`   | Config file, defaults, theme                                       |
-| `event.rs`    | Event enum and input thread                                        |
+| `event.rs`    | Event enum and pausable input thread                               |
 | `runtime.rs`  | Executes commands on background threads                            |
 | `worker.rs`   | Latest-wins worker with cooperative cancellation                   |
 | `nav.rs`      | Cursor and scroll offset math                                      |
-| `opener.rs`   | Detached file opener                                               |
+| `opener.rs`   | Detached and foreground program launching                          |
+| `console.rs`  | Command-line editor and command parser                             |
 | `fs/`         | Entries, listing, natural sort, metadata formatting (no UI types)  |
 | `preview/`    | `Previewer` trait, registry, built-in previewers, ANSI parsing     |
 | `graphics.rs` | Encodes images for the terminal graphics protocol                  |

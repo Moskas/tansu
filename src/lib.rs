@@ -3,6 +3,7 @@
 pub mod action;
 pub mod app;
 pub mod config;
+pub mod console;
 pub mod event;
 pub mod fs;
 pub mod graphics;

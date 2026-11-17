@@ -1,15 +1,16 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
-use tansu::app::App;
+use tansu::app::{App, Command};
 use tansu::config::Config;
-use tansu::event::{self, Event};
+use tansu::event::{self, Event, InputHandle};
 use tansu::fs::meta;
 use tansu::graphics::ImageEncoder;
 use tansu::keymap::Keymap;
+use tansu::opener;
 use tansu::preview::PreviewRegistry;
 use tansu::runtime::Runtime;
 use tansu::terminal::TerminalGuard;
@@ -62,7 +63,7 @@ fn main() -> Result<()> {
   // The terminal query reads stdin, so it has to finish before the input thread starts.
   let images = app.config.preview_images.then(ImageEncoder::detect);
   let (tx, rx) = mpsc::channel();
-  event::spawn_input_thread(tx.clone());
+  let input = event::spawn_input_thread(tx.clone());
   let registry = PreviewRegistry::configured(&app.config.highlight, app.config.preview_images);
   let mut runtime = Runtime::new(
     tx,
@@ -76,9 +77,25 @@ fn main() -> Result<()> {
   app.set_size(size.width, size.height);
 
   loop {
-    for cmd in app.take_commands() {
-      if let Some(err) = runtime.execute(cmd) {
-        app.set_error(err);
+    // Handling a command can queue more (a foreground program reloads the directory).
+    loop {
+      let cmds = app.take_commands();
+      if cmds.is_empty() {
+        break;
+      }
+      for cmd in cmds {
+        match cmd {
+          Command::Spawn {
+            argv,
+            path,
+            foreground: true,
+          } => run_foreground(&mut guard, &input, &mut app, &argv, &path)?,
+          cmd => {
+            if let Some(err) = runtime.execute(cmd) {
+              app.set_error(err);
+            }
+          }
+        }
       }
     }
     guard.terminal.draw(|f| ui::render(f, &app))?;
@@ -124,4 +141,23 @@ fn resolve_start(path: Option<PathBuf>) -> Result<(PathBuf, Option<String>)> {
     .map(PathBuf::from)
     .unwrap_or_else(|| "/".into());
   Ok((parent, name))
+}
+
+/// Runs a program on the terminal with tansu suspended, then restores the UI.
+fn run_foreground(
+  guard: &mut TerminalGuard,
+  input: &InputHandle,
+  app: &mut App,
+  argv: &[String],
+  path: &Path,
+) -> Result<()> {
+  input.pause();
+  let result = guard.suspended(|| opener::run_foreground(argv, path));
+  input.resume();
+  let result = result?.map_err(|e| e.to_string());
+  // Resizes while the program ran were not seen.
+  let size = guard.terminal.size()?;
+  app.set_size(size.width, size.height);
+  app.on_foreground_exit(argv.first().map_or("", String::as_str), result);
+  Ok(())
 }

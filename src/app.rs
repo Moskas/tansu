@@ -4,11 +4,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::action::Action;
 use crate::config::Config;
+use crate::console::{self, ConsoleCommand, EditOutcome, LineEditor};
 use crate::event::Event;
 use crate::fs::{DirCount, DirListing, Entry};
 use crate::graphics::EncodedImage;
@@ -36,6 +38,13 @@ pub enum Command {
   CountDirs(Vec<PathBuf>),
   VcsScan(VcsRequest),
   Open(PathBuf),
+  /// Run `argv` with `path` appended. A foreground program gets the terminal while tansu
+  /// waits; a detached one runs in the background.
+  Spawn {
+    argv: Vec<String>,
+    path: PathBuf,
+    foreground: bool,
+  },
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +116,8 @@ pub struct App {
   pub cwd: PathBuf,
   pub show_hidden: bool,
   pub show_help: bool,
+  /// The `:` command line, while it is open.
+  pub console: Option<LineEditor>,
   /// Show file metadata instead of the content preview (directories keep their listing).
   pub show_metadata: bool,
   pub should_quit: bool,
@@ -153,6 +164,7 @@ impl App {
       home,
       cwd: start.clone(),
       show_help: false,
+      console: None,
       show_metadata: false,
       should_quit: false,
       message: None,
@@ -333,9 +345,61 @@ impl App {
       self.keymap.reset();
       return;
     }
+    if let Some(editor) = &mut self.console {
+      match editor.handle_key(key) {
+        EditOutcome::Continue => {}
+        EditOutcome::Cancel => self.console = None,
+        EditOutcome::Submit(line) => {
+          self.console = None;
+          self.run_command_line(&line);
+        }
+      }
+      return;
+    }
     if let KeyResult::Action(action) = self.keymap.feed(key) {
       self.dispatch(action);
     }
+  }
+
+  /// Parses and runs a line typed into the command line.
+  pub fn run_command_line(&mut self, line: &str) {
+    match console::parse(line) {
+      None => {}
+      Some(Err(e)) => self.set_error(e.to_string()),
+      Some(Ok(ConsoleCommand::Action(action))) => self.dispatch(action),
+      Some(Ok(ConsoleCommand::OpenWith { argv, detach })) => self.open_with(argv, detach),
+    }
+  }
+
+  /// Runs `argv` on the selected entry. Directories are passed as they are, not entered.
+  fn open_with(&mut self, argv: Vec<String>, detach: bool) {
+    let Some(entry) = self.selected().cloned() else {
+      self.set_error("nothing selected");
+      return;
+    };
+    if detach {
+      self.set_info(format!("opening {} with {}", entry.name, argv[0]));
+    }
+    self.commands.push(Command::Spawn {
+      argv,
+      path: entry.path,
+      foreground: !detach,
+    });
+  }
+
+  /// Called after a foreground program returned the terminal. The program may have changed
+  /// files, so the current directory is listed again.
+  pub fn on_foreground_exit(&mut self, program: &str, result: Result<ExitStatus, String>) {
+    match result {
+      Ok(status) if status.success() => {}
+      Ok(status) => match status.code() {
+        Some(code) => self.set_error(format!("`{program}` exited with status {code}")),
+        None => self.set_error(format!("`{program}` was terminated ({status})")),
+      },
+      Err(e) => self.set_error(e),
+    }
+    let cwd = self.cwd.clone();
+    self.request_dir(&cwd, true);
   }
 
   pub fn set_size(&mut self, width: u16, height: u16) {
@@ -425,6 +489,10 @@ impl App {
         self.set_info(format!("preview shows {mode}"));
       }
       Action::ToggleHelp => self.show_help = !self.show_help,
+      Action::CommandLine => {
+        self.keymap.reset();
+        self.console = Some(LineEditor::new());
+      }
       Action::Quit => self.should_quit = true,
     }
   }

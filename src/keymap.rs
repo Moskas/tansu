@@ -241,6 +241,7 @@ pub const DEFAULT_BINDINGS: &[(&str, Action)] = &[
   ("i", Action::ToggleMetadata),
   ("r", Action::Reload),
   ("?", Action::ToggleHelp),
+  (":", Action::CommandLine),
   ("q", Action::Quit),
   ("<C-c>", Action::Quit),
 ];

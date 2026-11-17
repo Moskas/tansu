@@ -21,6 +21,13 @@ use crate::fs::{Entry, EntryKind, FileClass};
 pub fn render(frame: &mut Frame, app: &App) {
   let area = frame.area();
   draw(frame.buffer_mut(), area, app);
+  if let Some(editor) = &app.console
+    && !app.show_help
+    && area.height > 0
+  {
+    let (_, x) = status::console_view(editor, area.width);
+    frame.set_cursor_position((area.x + x, area.bottom() - 1));
+  }
 }
 
 /// Draws the full screen into `buf`.

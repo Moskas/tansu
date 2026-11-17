@@ -40,6 +40,20 @@ impl TerminalGuard {
   }
 }
 
+impl TerminalGuard {
+  /// Hands the terminal back to the shell state (cooked mode, main screen, visible cursor)
+  /// while `f` runs, then takes it over again and forces a full redraw.
+  pub fn suspended<T>(&mut self, f: impl FnOnce() -> T) -> Result<T> {
+    restore();
+    let out = f();
+    enable_raw_mode().context("enabling raw mode")?;
+    execute!(io::stdout(), EnterAlternateScreen).context("entering alternate screen")?;
+    self.terminal.hide_cursor().ok();
+    self.terminal.clear().context("clearing terminal")?;
+    Ok(out)
+  }
+}
+
 impl Drop for TerminalGuard {
   fn drop(&mut self) {
     restore();

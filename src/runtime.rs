@@ -256,6 +256,13 @@ impl Runtime {
       Command::VcsScan(req) => {
         let _ = self.vcs.send(req);
       }
+      // Foreground programs need the terminal, so the main loop runs them; anything that
+      // reaches the runtime is started detached.
+      Command::Spawn { argv, path, .. } => {
+        if let Err(e) = crate::opener::spawn_detached(&argv, &path) {
+          return Some(e.to_string());
+        }
+      }
       Command::Open(path) => {
         if let Err(e) = crate::opener::open(&self.opener, &path) {
           return Some(e.to_string());
@@ -266,7 +273,7 @@ impl Runtime {
   }
 }
 
-/// Runs a command to completion on the current thread. `Open` is ignored.
+/// Runs a command to completion on the current thread. `Open` and `Spawn` are ignored.
 pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLimits) -> Vec<Event> {
   let token = CancelToken::never();
   match cmd {
@@ -282,6 +289,6 @@ pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLim
       out
     }
     Command::VcsScan(req) => VcsScanner::default().scan(&req).into_iter().collect(),
-    Command::Open(_) | Command::CancelPreview => Vec::new(),
+    Command::Open(_) | Command::Spawn { .. } | Command::CancelPreview => Vec::new(),
   }
 }
