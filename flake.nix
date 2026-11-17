@@ -23,9 +23,16 @@
           overlays = [ fenix.overlays.default ];
         };
         naersk' = pkgs.callPackage naersk { };
-      in
-      rec {
-        defaultPackage = naersk'.buildPackage {
+
+        # Programs tansu runs for previews. All are optional at runtime: without one, the
+        # preview it provides falls back to plain metadata.
+        previewTools = with pkgs; [
+          bat # syntax highlighting
+          ffmpeg-headless # ffprobe (video details) and ffmpeg (frames)
+          ffmpegthumbnailer # video frames
+        ];
+
+        tansu-unwrapped = naersk'.buildPackage {
           src = ./.;
           nativeBuildInputs = with pkgs; [
             pkg-config
@@ -34,7 +41,27 @@
           buildInputs = with pkgs; [ openssl ];
         };
 
-        packages.default = defaultPackage;
+        # tansu with the preview tools on PATH. They are appended, so programs the user
+        # already has on PATH take precedence.
+        tansu = pkgs.symlinkJoin {
+          name = "tansu-${tansu-unwrapped.version}";
+          paths = [ tansu-unwrapped ];
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          postBuild = ''
+            wrapProgram $out/bin/tansu --suffix PATH : ${pkgs.lib.makeBinPath previewTools}
+          '';
+          meta = tansu-unwrapped.meta // {
+            mainProgram = "tansu";
+          };
+        };
+      in
+      rec {
+        defaultPackage = tansu;
+
+        packages = {
+          default = tansu;
+          inherit tansu tansu-unwrapped;
+        };
 
         devShell = pkgs.mkShell {
           buildInputs = with pkgs; [
@@ -47,7 +74,8 @@
             ])
             sqlite
             cargo-audit
-          ];
+          ]
+          ++ previewTools;
           nativeBuildInputs = with pkgs; [
             (openssl.override { static = true; })
             pkg-config

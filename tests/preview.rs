@@ -385,6 +385,165 @@ fn exposure_times_read_like_a_camera_shows_them() {
   assert_eq!(exposure(30, 1), "30 s");
 }
 
+/// Whether `program` is installed. Tests needing an external tool skip without it, so
+/// `cargo test` works outside the Nix dev shell too.
+fn installed(program: &str) -> bool {
+  std::process::Command::new(program)
+    .arg("-version")
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .status()
+    .is_ok()
+}
+
+/// A 2 s, 64x48, 10 fps test clip with a mono 44.1 kHz tone.
+fn clip(path: &Path) -> bool {
+  if !installed("ffmpeg") || !installed("ffprobe") {
+    eprintln!("skipped: ffmpeg/ffprobe not installed");
+    return false;
+  }
+  let status = std::process::Command::new("ffmpeg")
+    .args(["-v", "error", "-nostdin", "-f", "lavfi", "-i"])
+    .arg("testsrc=duration=2:size=64x48:rate=10")
+    .args(["-f", "lavfi", "-i", "sine=duration=2:sample_rate=44100"])
+    .args(["-shortest", "-c:v", "mpeg4", "-c:a", "aac", "-y"])
+    .arg(path)
+    .status()
+    .unwrap();
+  assert!(status.success());
+  true
+}
+
+fn info_of(preview: &Preview) -> Vec<(String, String)> {
+  match preview {
+    Preview::Image(img) => img.info.clone(),
+    Preview::Metadata(rows) => rows.clone(),
+    other => panic!("unexpected {other:?}"),
+  }
+}
+
+fn row<'a>(info: &'a [(String, String)], label: &str) -> Option<&'a str> {
+  info
+    .iter()
+    .find(|(k, _)| k == label)
+    .map(|(_, v)| v.as_str())
+}
+
+#[test]
+fn ffprobe_output_becomes_video_details() {
+  let probe = tansu::preview::video::Probe::parse(
+    "streams.stream.0.codec_name=\"h264\"\n\
+     streams.stream.0.codec_type=\"video\"\n\
+     streams.stream.0.width=1920\n\
+     streams.stream.0.height=1080\n\
+     streams.stream.0.avg_frame_rate=\"24000/1001\"\n\
+     streams.stream.1.codec_name=\"opus\"\n\
+     streams.stream.1.codec_type=\"audio\"\n\
+     streams.stream.1.sample_rate=\"48000\"\n\
+     streams.stream.1.channels=6\n\
+     format.duration=\"3725.400000\"\n\
+     format.bit_rate=\"4512000\"\n",
+  );
+  let rows = probe.rows();
+  let rows: Vec<(&str, &str)> = rows.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+  assert_eq!(
+    rows,
+    vec![
+      ("Duration", "1:02:05"),
+      ("Resolution", "1920x1080"),
+      ("Video", "h264, 23.98 fps"),
+      ("Audio", "opus, 6 channels, 48 kHz"),
+      ("Bitrate", "4.51 Mb/s"),
+    ]
+  );
+}
+
+#[test]
+fn videos_show_a_frame_with_their_details() {
+  let tmp = tempfile::tempdir().unwrap();
+  let file = tmp.path().join("clip.mp4");
+  if !clip(&file) {
+    return;
+  }
+  let registry = PreviewRegistry::configured(&HighlightConfig::default(), true);
+  let preview = preview(&registry, &file, PreviewLimits::default());
+  let Preview::Image(img) = &preview else {
+    panic!("expected a frame, got {preview:?}");
+  };
+  assert_eq!((img.width, img.height), (64, 48));
+  let info = info_of(&preview);
+  assert_eq!(row(&info, "Duration"), Some("0:02"));
+  assert_eq!(row(&info, "Resolution"), Some("64x48"));
+  assert_eq!(row(&info, "Video"), Some("mpeg4, 10 fps"));
+  assert_eq!(row(&info, "Audio"), Some("aac, mono, 44.1 kHz"));
+}
+
+#[test]
+fn without_graphics_videos_show_only_their_details() {
+  let tmp = tempfile::tempdir().unwrap();
+  let file = tmp.path().join("clip.mp4");
+  if !clip(&file) {
+    return;
+  }
+  let registry = PreviewRegistry::configured(&HighlightConfig::default(), false);
+  let preview = preview(&registry, &file, PreviewLimits::default());
+  let Preview::Metadata(rows) = &preview else {
+    panic!("expected metadata, got {preview:?}");
+  };
+  assert_eq!(row(rows, "Type"), Some("video"));
+  assert_eq!(row(rows, "Resolution"), Some("64x48"));
+}
+
+#[test]
+fn rendered_frames_are_cached_on_disk_until_the_file_changes() {
+  let tmp = tempfile::tempdir().unwrap();
+  let file = tmp.path().join("clip.mp4");
+  if !clip(&file) {
+    return;
+  }
+  let cache = tmp.path().join("cache");
+  let mut registry = PreviewRegistry::configured(&HighlightConfig::default(), true);
+  registry.set_thumbnails(tansu::preview::ThumbnailCache::new(cache.clone()));
+  let first = preview(&registry, &file, PreviewLimits::default());
+  assert!(matches!(first, Preview::Image(_)));
+  let mut names: Vec<String> = fs::read_dir(&cache)
+    .unwrap()
+    .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+    .collect();
+  names.sort();
+  assert_eq!(
+    names.len(),
+    2,
+    "a PNG and its details, no leftovers: {names:?}"
+  );
+  assert!(names[0].starts_with("video-") && names[0].ends_with(".png"));
+  assert!(names[1].ends_with(".txt"));
+
+  // Same size and mtime, unreadable content: only the cache can still produce a frame.
+  let mtime = fs::metadata(&file).unwrap().modified().unwrap();
+  let len = fs::metadata(&file).unwrap().len();
+  fs::write(&file, vec![0u8; len as usize]).unwrap();
+  fs::File::options()
+    .write(true)
+    .open(&file)
+    .unwrap()
+    .set_modified(mtime)
+    .unwrap();
+  let cached = preview(&registry, &file, PreviewLimits::default());
+  assert!(matches!(cached, Preview::Image(_)), "served from the cache");
+  assert_eq!(info_of(&cached), info_of(&first));
+
+  // A new modification time is a new version: rendered again, which now fails.
+  fs::File::options()
+    .write(true)
+    .open(&file)
+    .unwrap()
+    .set_modified(mtime + std::time::Duration::from_secs(60))
+    .unwrap();
+  let changed = preview(&registry, &file, PreviewLimits::default());
+  assert!(!matches!(changed, Preview::Image(_)));
+}
+
 #[test]
 fn renderings_are_scaled_down_and_cached_privately() {
   use std::os::unix::fs::PermissionsExt as _;

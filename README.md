@@ -22,9 +22,15 @@ include hidden entries, and git status markers sit at the right edge of each row
 With Nix:
 
 ```sh
+nix run .            # the wrapped package, see below
 nix develop          # or `direnv allow` with the provided .envrc
 cargo run -- [path]  # opens at path, defaults to the current directory
 ```
+
+The flake provides two packages: `tansu` (also `default`), wrapped so the preview tools below
+are on its `PATH`, and `tansu-unwrapped`, which uses whatever the system provides. The
+wrapper appends to `PATH`, so tools already installed take precedence. The dev shell
+includes the tools as well, so the tests that need them run there.
 
 Without Nix, a stable Rust toolchain (edition 2024, Rust 1.90+) is enough:
 
@@ -39,6 +45,26 @@ Icons use Nerd Font glyphs by default, picked by file name and extension with th
 tables as the ranger_devicons plugin. Set `icons = false` if your terminal font lacks them.
 
 Git status markers need the `git` executable on `PATH`; without it, tansu shows none.
+
+### Optional runtime dependencies
+
+tansu runs these programs when they are on `PATH`. None is required: without one, only the
+feature it provides is missing, and previews fall back to plain text or a metadata block.
+
+| Program                    | Used for                                    | Package             |
+|----------------------------|---------------------------------------------|---------------------|
+| `git`                      | Git status markers                          | `git`               |
+| `bat`                      | Syntax highlighting of text previews        | `bat`               |
+| `ffprobe`                  | Video details (duration, size, codecs)      | `ffmpeg`            |
+| `ffmpegthumbnailer`        | Video frames                                | `ffmpegthumbnailer` |
+| `ffmpeg`                   | Video frames without ffmpegthumbnailer      | `ffmpeg`            |
+| `zoxide`                   | `:z` and recording visited directories      | `zoxide`            |
+| `wl-copy`, `xclip`, `xsel` | The `y` clipboard keys (OSC 52 without)     | same names [^clip]  |
+| `xdg-open`                 | The default opener                          | `xdg-utils`         |
+
+[^clip]: `wl-copy` comes in the `wl-clipboard` package; `xclip` and `xsel` in their own.
+
+The wrapped Nix package includes `bat`, `ffmpeg` and `ffmpegthumbnailer`.
 
 ## Previews
 
@@ -57,6 +83,15 @@ text, an image, or a metadata block for everything else.
   taken, exposure, aperture, ISO, focal length and GPS location. They only take room while
   the image keeps two thirds of the column; in a shorter terminal they move to the metadata
   view (`i`).
+- Videos show a frame from 10% into the video (the first frame is often black), rendered
+  by `ffmpegthumbnailer` or `ffmpeg`, with the duration, resolution, video and audio codecs
+  and bitrate from `ffprobe` below it, laid out like photo details. Without the frame
+  programs (or without graphics), the details are shown in a metadata block.
+- Rendered previews (video frames) are scaled to at most 2048 pixels a side and cached in
+  `$XDG_CACHE_HOME/tansu/thumbnails` (usually `~/.cache/tansu/thumbnails`, readable only by
+  the user), keyed by path, size and modification time, so a file is only rendered again
+  after it changes. The cache keeps the 1000 most recent thumbnails, up to 256 MiB.
+  External programs get 10 seconds before they are stopped.
 - `i` switches file previews to a metadata block (size, mode, owner, modification time,
   and dimensions for images) and back. The mode stays on while moving; directories keep
   showing their contents.
@@ -484,7 +519,7 @@ with events.
 | `search.rs`   | Search patterns: wildcards, fuzzy matching and ranking             |
 | `clipboard.rs`| System clipboard through wl-copy, xclip, xsel or OSC 52            |
 | `fs/`         | Entries, listing, sort, metadata, file ops, trash (no UI types)    |
-| `preview/`    | `Previewer` trait, registry, built-in previewers, ANSI parsing     |
+| `preview/`    | `Previewer` trait, registry, previewers, ANSI, thumbnail cache     |
 | `graphics.rs` | Encodes images for the terminal graphics protocol                  |
 | `vcs/`        | Git status via the `git` CLI, per-path and per-directory status    |
 | `ui/`         | Layout, columns, header, status bar, help overlay, icons           |

@@ -9,6 +9,7 @@ mod image;
 mod metadata;
 mod text;
 pub mod thumbnail;
+pub mod video;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,6 +25,7 @@ pub use image::{ImagePreviewer, PreviewImage};
 pub use metadata::{MetadataPreviewer, metadata_lines};
 pub use text::{TextPreviewer, looks_binary};
 pub use thumbnail::ThumbnailCache;
+pub use video::VideoPreviewer;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Preview {
@@ -124,7 +126,8 @@ impl PreviewRegistry {
     r
   }
 
-  /// The defaults plus syntax highlighting (when enabled) and, when `images` is set, an
+  /// The defaults plus syntax highlighting (when enabled), video previews (with a frame when
+  /// `images` is set) and, when `images` is set, an
   /// image previewer ahead of text.
   pub fn configured(highlight: &HighlightConfig, images: bool) -> Self {
     let mut r = Self::new();
@@ -132,6 +135,7 @@ impl PreviewRegistry {
     if images {
       r.register(75, Box::new(ImagePreviewer));
     }
+    r.register(70, Box::new(VideoPreviewer { frames: images }));
     let text = if highlight.enabled {
       TextPreviewer::with_highlighter(Highlighter::new(highlight.clone()))
     } else {
