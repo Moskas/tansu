@@ -52,7 +52,11 @@ text, an image, or a metadata block for everything else.
   protocol the terminal supports (kitty, sixel or iTerm2), detected at startup. Other
   terminals get unicode half blocks. Formats that cannot be decoded, such as SVG, fall back
   to the text or metadata preview. Images are scaled once with Lanczos to the column's pixel
-  size, never enlarged.
+  size, never enlarged, and turned upright according to their EXIF orientation.
+- Photos list their EXIF details below the image, under a separating rule: camera, lens, date
+  taken, exposure, aperture, ISO, focal length and GPS location. They only take room while
+  the image keeps two thirds of the column; in a shorter terminal they move to the metadata
+  view (`i`).
 - `i` switches file previews to a metadata block (size, mode, owner, modification time,
   and dimensions for images) and back. The mode stays on while moving; directories keep
   showing their contents.

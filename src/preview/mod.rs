@@ -3,6 +3,7 @@
 
 pub mod ansi;
 mod directory;
+pub mod exif;
 pub mod highlight;
 mod image;
 mod metadata;

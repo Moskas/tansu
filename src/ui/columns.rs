@@ -146,18 +146,34 @@ fn render_preview(buf: &mut Buffer, area: Rect, app: &App) {
       }
     }
     Preview::Image(image) => match &slot.image {
-      Some(encoded) => encoded.render(area, buf),
+      Some(encoded) => {
+        let (rows, info) = layout::image_split(area.height, image.info.len());
+        encoded.render(
+          Rect {
+            height: rows,
+            ..area
+          },
+          buf,
+        );
+        if info > 0 {
+          // Right below the image, which may not fill the rows it was given, after a rule
+          // that sets the details apart from it.
+          let rule_y = area.y + encoded.rows().min(rows);
+          let rule = "─".repeat(area.width as usize);
+          buf.set_string(area.x, rule_y, rule, Style::new().fg(theme.border.0));
+          let below = Rect::new(area.x, rule_y + 1, area.width, info);
+          draw_metadata(buf, below, &image.info, 0, theme);
+        }
+      }
       // No graphics support (or encoding failed): describe the image instead.
-      None => draw_metadata(
-        buf,
-        area,
-        &[(
+      None => {
+        let mut rows = vec![(
           "Image".to_string(),
           format!("{}x{}", image.width, image.height),
-        )],
-        0,
-        theme,
-      ),
+        )];
+        rows.extend(image.info.iter().cloned());
+        draw_metadata(buf, area, &rows, 0, theme);
+      }
     },
     Preview::Metadata(rows) => draw_metadata(buf, area, rows, slot.scroll, theme),
   }
@@ -186,6 +202,7 @@ pub fn metadata_rows(entry: &Entry, status: &PreviewStatus) -> Vec<(String, Stri
         format!("{}x{}", image.width, image.height),
       ),
     );
+    rows.extend(image.info.iter().cloned());
   }
   rows
 }

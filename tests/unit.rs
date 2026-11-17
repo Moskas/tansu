@@ -1331,3 +1331,13 @@ mod trash {
     assert_eq!(fs::read_dir(root.join("info")).map_or(0, |d| d.count()), 0);
   }
 }
+
+#[test]
+fn image_details_need_the_image_to_keep_two_thirds_of_the_column() {
+  use tansu::ui::layout::image_split;
+  assert_eq!(image_split(40, 0), (40, 0));
+  assert_eq!(image_split(40, 7), (32, 7));
+  assert_eq!(image_split(24, 7), (16, 7));
+  assert_eq!(image_split(23, 7), (23, 0));
+  assert_eq!(image_split(0, 3), (0, 0));
+}

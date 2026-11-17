@@ -14,6 +14,20 @@ pub fn body_inner(width: u16, rows: u16) -> Rect {
   Rect::new(1, 2, width.saturating_sub(2), rows)
 }
 
+/// Splits a preview column `height` rows tall between an image and `info` rows of details
+/// below it, after a separating rule. The details are only shown while the image keeps two
+/// thirds of the column; in a shorter column they are left to the metadata view. Returns the
+/// rows for the image and the number of detail rows shown. The image is encoded and drawn
+/// with the same split.
+pub fn image_split(height: u16, info: usize) -> (u16, u16) {
+  let below = info.saturating_add(1).min(u16::MAX as usize) as u16;
+  if info == 0 || below.saturating_mul(3) > height {
+    (height, 0)
+  } else {
+    (height - below, below - 1)
+  }
+}
+
 /// Splits `inner` (the body without its outer border) into the three columns. Columns with
 /// a zero ratio are hidden. Returns the column rects and the x positions of separators.
 pub fn split_columns(inner: Rect, ratios: [u16; 3]) -> ([Option<Rect>; 3], Vec<u16>) {

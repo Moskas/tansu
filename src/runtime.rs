@@ -211,8 +211,10 @@ pub fn run_preview(
     r => r.map_err(|e| e.to_string()),
   };
   let image = match (&mut result, encoder, cells) {
-    (Ok(Preview::Image(img)), Some(encoder), Some(cells)) => {
-      let encoded = encoder.encode(&img.image, cells);
+    (Ok(Preview::Image(img)), Some(encoder), Some((width, height))) => {
+      // Details below the image take some of the column.
+      let (rows, _) = crate::ui::layout::image_split(height, img.info.len());
+      let encoded = encoder.encode(&img.image, (width, rows));
       if token.is_cancelled() {
         return None;
       }

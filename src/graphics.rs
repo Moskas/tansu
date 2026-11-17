@@ -158,6 +158,12 @@ impl EncodedImage {
   pub fn render(&self, area: Rect, buf: &mut Buffer) {
     Image::new(&self.protocol).render(area, buf);
   }
+
+  /// Rows the image covers, which can be fewer than the rows it was encoded for (a wide
+  /// image in a tall column).
+  pub fn rows(&self) -> u16 {
+    self.protocol.size().height
+  }
 }
 
 impl std::fmt::Debug for EncodedImage {
