@@ -4,6 +4,7 @@ use std::io::{self, Stdout};
 use std::panic;
 
 use anyhow::{Context, Result};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{
   EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -16,6 +17,8 @@ pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 /// Owns the terminal; restores it when dropped (normal exit and error paths).
 pub struct TerminalGuard {
   pub terminal: Tui,
+  /// Mouse reporting is on, and must be turned on again after a suspension.
+  mouse: bool,
 }
 
 impl TerminalGuard {
@@ -36,18 +39,32 @@ impl TerminalGuard {
     };
     terminal.hide_cursor().ok();
     terminal.clear().ok();
-    Ok(TerminalGuard { terminal })
+    Ok(TerminalGuard {
+      terminal,
+      mouse: false,
+    })
   }
 }
 
 impl TerminalGuard {
-  /// Hands the terminal back to the shell state (cooked mode, main screen, visible cursor)
-  /// while `f` runs, then takes it over again and forces a full redraw.
+  /// Turns on mouse reporting. Called after terminal queries are done, so mouse reports
+  /// cannot get mixed into their replies.
+  pub fn enable_mouse(&mut self) -> Result<()> {
+    execute!(io::stdout(), EnableMouseCapture).context("enabling mouse capture")?;
+    self.mouse = true;
+    Ok(())
+  }
+
+  /// Hands the terminal back to the shell state (cooked mode, main screen, visible cursor,
+  /// no mouse reporting) while `f` runs, then takes it over again and forces a full redraw.
   pub fn suspended<T>(&mut self, f: impl FnOnce() -> T) -> Result<T> {
     restore();
     let out = f();
     enable_raw_mode().context("enabling raw mode")?;
     execute!(io::stdout(), EnterAlternateScreen).context("entering alternate screen")?;
+    if self.mouse {
+      self.enable_mouse()?;
+    }
     self.terminal.hide_cursor().ok();
     self.terminal.clear().context("clearing terminal")?;
     Ok(out)
@@ -64,7 +81,12 @@ impl Drop for TerminalGuard {
 /// Best-effort terminal restoration; safe to call more than once.
 pub fn restore() {
   let _ = disable_raw_mode();
-  let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
+  let _ = execute!(
+    io::stdout(),
+    DisableMouseCapture,
+    LeaveAlternateScreen,
+    crossterm::cursor::Show
+  );
 }
 
 fn install_panic_hook() {

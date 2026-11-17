@@ -8,6 +8,12 @@ pub fn body_rows(height: u16) -> usize {
   height.saturating_sub(CHROME_ROWS) as usize
 }
 
+/// The body inside its border, where the columns go, on a terminal `width` cells wide whose
+/// body has `rows` list rows.
+pub fn body_inner(width: u16, rows: u16) -> Rect {
+  Rect::new(1, 2, width.saturating_sub(2), rows)
+}
+
 /// Splits `inner` (the body without its outer border) into the three columns. Columns with
 /// a zero ratio are hidden. Returns the column rects and the x positions of separators.
 pub fn split_columns(inner: Rect, ratios: [u16; 3]) -> ([Option<Rect>; 3], Vec<u16>) {

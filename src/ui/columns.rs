@@ -56,12 +56,7 @@ fn render_parent(buf: &mut Buffer, area: Rect, app: &App) {
   };
   match app.dir_state(parent) {
     Some(DirState::Loaded(listing)) => {
-      let entries: Vec<&Entry> = listing
-        .entries
-        .iter()
-        .filter(|e| app.is_visible(e) || e.path == app.cwd)
-        .collect();
-      let selected = entries.iter().position(|e| e.path == app.cwd);
+      let (entries, selected) = app.parent_entries(listing);
       draw_list(buf, area, parent, &entries, selected, app);
     }
     Some(DirState::Failed(_)) => placeholder(buf, area, "not accessible", alert_style(app)),
@@ -108,7 +103,8 @@ fn render_preview(buf: &mut Buffer, area: Rect, app: &App) {
       .selected()
       .filter(|e| !e.is_dir() && e.path == slot.path)
   {
-    return draw_metadata(buf, area, &metadata_rows(entry, &slot.status), theme);
+    let rows = metadata_rows(entry, &slot.status);
+    return draw_metadata(buf, area, &rows, slot.scroll, theme);
   }
   let preview = match &slot.status {
     PreviewStatus::Loading => return,
@@ -119,7 +115,8 @@ fn render_preview(buf: &mut Buffer, area: Rect, app: &App) {
   match &**preview {
     Preview::Text { lines, .. } => {
       let style = Style::new().fg(theme.fg.0);
-      for (row, line) in lines.iter().take(area.height as usize).enumerate() {
+      let shown = lines.iter().skip(slot.scroll).take(area.height as usize);
+      for (row, line) in shown.enumerate() {
         buf.set_stringn(
           area.x,
           area.y + row as u16,
@@ -130,22 +127,15 @@ fn render_preview(buf: &mut Buffer, area: Rect, app: &App) {
       }
     }
     Preview::Directory(listing) => {
-      let entries: Vec<&Entry> = listing
-        .entries
-        .iter()
-        .filter(|e| app.is_visible(e))
-        .collect();
+      let (entries, selected) = app.preview_entries(listing);
       if entries.is_empty() {
         return placeholder(buf, area, "empty", alert_style(app));
       }
-      let selected = app
-        .remembered(&listing.path)
-        .and_then(|name| entries.iter().position(|e| e.name == name))
-        .unwrap_or(0);
       draw_list(buf, area, &listing.path, &entries, Some(selected), app);
     }
     Preview::Highlighted { lines, .. } => {
-      for (row, line) in lines.iter().take(area.height as usize).enumerate() {
+      let shown = lines.iter().skip(slot.scroll).take(area.height as usize);
+      for (row, line) in shown.enumerate() {
         let y = area.y + row as u16;
         let mut x = area.x;
         for span in line {
@@ -167,16 +157,17 @@ fn render_preview(buf: &mut Buffer, area: Rect, app: &App) {
           "Image".to_string(),
           format!("{}x{}", image.width, image.height),
         )],
+        0,
         theme,
       ),
     },
-    Preview::Metadata(rows) => draw_metadata(buf, area, rows, theme),
+    Preview::Metadata(rows) => draw_metadata(buf, area, rows, slot.scroll, theme),
   }
 }
 
 /// Metadata for the metadata view, refined by what the content preview found out: the file
 /// type, and the dimensions of images.
-fn metadata_rows(entry: &Entry, status: &PreviewStatus) -> Vec<(String, String)> {
+pub fn metadata_rows(entry: &Entry, status: &PreviewStatus) -> Vec<(String, String)> {
   let content = match status {
     PreviewStatus::Ready(p) => Some(&**p),
     _ => None,
@@ -201,7 +192,14 @@ fn metadata_rows(entry: &Entry, status: &PreviewStatus) -> Vec<(String, String)>
   rows
 }
 
-fn draw_metadata(buf: &mut Buffer, area: Rect, rows: &[(String, String)], theme: &Theme) {
+/// Draws `rows` from `skip` on, keys aligned over all rows so scrolling does not shift them.
+fn draw_metadata(
+  buf: &mut Buffer,
+  area: Rect,
+  rows: &[(String, String)],
+  skip: usize,
+  theme: &Theme,
+) {
   let key_w = rows
     .iter()
     .map(|(k, _)| display_width(k))
@@ -209,7 +207,8 @@ fn draw_metadata(buf: &mut Buffer, area: Rect, rows: &[(String, String)], theme:
     .unwrap_or(0);
   let key_style = Style::new().fg(theme.dim.0);
   let val_style = Style::new().fg(theme.fg.0);
-  for (row, (key, value)) in rows.iter().take(area.height as usize).enumerate() {
+  let shown = rows.iter().skip(skip).take(area.height as usize);
+  for (row, (key, value)) in shown.enumerate() {
     let y = area.y + row as u16;
     let (x, _) = buf.set_stringn(area.x, y, key, area.width as usize, key_style);
     let used = (x - area.x) as usize + (key_w - display_width(key)) + 2;

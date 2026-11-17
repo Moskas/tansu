@@ -56,6 +56,11 @@ text, an image, or a metadata block for everything else.
 - `i` switches file previews to a metadata block (size, mode, owner, modification time,
   and dimensions for images) and back. The mode stays on while moving; directories keep
   showing their contents.
+- Text and metadata previews scroll independently of the cursor with `<C-j>` / `<C-k>` (one
+  line) or the mouse wheel (three lines). Moving to another entry starts at the top again.
+  Scrolling near the end of a truncated text preview loads more of the file in the
+  background: each step reads four times as many bytes as the last, with no line limit,
+  up to 16 MiB. The shown text keeps its position until the longer version arrives.
 
 ## Git status markers
 
@@ -93,6 +98,7 @@ cargo test
 | `G`, `<End>`                | Jump to last entry            |
 | `<C-d>` / `<C-u>`           | Half page down / up           |
 | `<PageDown>` / `<PageUp>`   | Page down / up                |
+| `<C-j>` / `<C-k>`           | Scroll the preview down / up  |
 | `~`                         | Go to home directory          |
 | `.`                         | Toggle hidden files           |
 | `i`                         | Toggle file metadata / preview|
@@ -132,6 +138,22 @@ keeps the selected entry under the cursor and applies to every column.
 
 Files are opened with the configured opener (default `xdg-open`), detached from the
 terminal so tansu stays usable.
+
+## Mouse
+
+Mouse input follows ranger:
+
+- Left click selects an entry in the current column. Clicking an entry in the parent or
+  preview column enters that column's directory with the entry selected.
+- Right click opens an entry: files with the opener, directories by entering them. Over a
+  file's preview it opens that file.
+- Double click opens an entry in the current column.
+- The wheel moves the cursor three rows. Over the parent column it steps through the
+  sibling directories of the current one. Over a file's preview it scrolls the preview
+  instead (text and metadata; images do not scroll).
+
+A click closes the help overlay; the mouse is ignored while the command line is open. Set
+`mouse_enabled = false` to leave the mouse to the terminal.
 
 ## Marking
 
@@ -309,6 +331,9 @@ scroll_offset = 8
 preview_images = true
 # Show the keys that can follow an unfinished key sequence (`g`, `y`, ...).
 which_key = true
+# Clicks and the mouse wheel. While enabled, the terminal's own text selection usually
+# needs Shift held.
+mouse_enabled = true
 
 [preview]
 max_bytes = 65536     # bytes read from a file for the text preview
@@ -376,8 +401,8 @@ vcs_commit = "#fabd2f"
 ```
 
 Action names: `move_up`, `move_down`, `move_top`, `move_bottom`, `half_page_up`,
-`half_page_down`, `page_up`, `page_down`, `go_parent`, `open`, `go_home`, `toggle_hidden`,
-`toggle_metadata`, `rename`, `shell`, `sort name`, `sort size`, `sort mtime`, `sort ctime`,
+`half_page_down`, `page_up`, `page_down`, `preview_up`, `preview_down`, `go_parent`, `open`,
+`go_home`, `toggle_hidden`, `toggle_metadata`, `rename`, `shell`, `sort name`, `sort size`, `sort mtime`, `sort ctime`,
 `copy`, `cut`, `paste`, `paste_overwrite`, `clear_buffer`, `yank_path`, `yank_dir`, `yank_name`,
 `yank_name_without_ext`, `yank_file`, `reload`, `toggle_help`, `command_line`, `quit`.
 

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::style::Modifier;
@@ -14,6 +14,7 @@ use tempfile::TempDir;
 
 use tansu::app::{App, Command, PreviewStatus};
 use tansu::config::Config;
+use tansu::event::Event;
 use tansu::keymap::{Key, Keymap};
 use tansu::preview::{Preview, PreviewRegistry};
 use tansu::runtime::execute_sync;
@@ -1516,4 +1517,345 @@ fn marked_entries_are_bold_in_the_marked_color() {
   assert!(cell.modifier.contains(Modifier::BOLD));
   assert!(!buf[(12, 6)].modifier.contains(Modifier::BOLD));
   assert!(render(&app)[HEIGHT as usize - 1].contains("1 marked"));
+}
+
+// Mouse tests use the default 60x12 layout: 8 list rows starting at y=2, the parent column at
+// x=1..8, the current column at x=9..30 and the preview column at x=31..56.
+const PARENT_X: u16 = 3;
+const CURRENT_X: u16 = 15;
+const PREVIEW_X: u16 = 35;
+const FIRST_ROW: u16 = 2;
+
+fn mouse(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
+  app.handle_event(Event::Mouse(MouseEvent {
+    kind,
+    column,
+    row,
+    modifiers: KeyModifiers::NONE,
+  }));
+}
+
+fn left(app: &mut App, column: u16, row: u16) {
+  mouse(app, MouseEventKind::Down(MouseButton::Left), column, row);
+}
+
+fn right(app: &mut App, column: u16, row: u16) {
+  mouse(app, MouseEventKind::Down(MouseButton::Right), column, row);
+}
+
+#[test]
+fn mouse_layout_matches_rendering() {
+  let (_tmp, work) = fixture();
+  let app = new_app(&work);
+  let screen = render(&app);
+  let row: Vec<char> = screen[FIRST_ROW as usize].chars().collect();
+  assert_eq!(row[0], '│');
+  assert_eq!(row[8], '│', "separator between parent and current");
+  assert_eq!(row[30], '│', "separator between current and preview");
+}
+
+#[test]
+fn click_selects_and_double_or_right_click_opens() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  left(&mut app, CURRENT_X, FIRST_ROW + 3);
+  assert_eq!(selected(&app), "file2.txt");
+  pump(&mut app);
+  left(&mut app, CURRENT_X, FIRST_ROW + 3);
+  assert_eq!(
+    app.take_commands(),
+    vec![Command::Open(work.join("file2.txt"))]
+  );
+
+  right(&mut app, CURRENT_X, FIRST_ROW + 4);
+  assert_eq!(selected(&app), "file10.txt");
+  let cmds = app.take_commands();
+  assert!(cmds.contains(&Command::Open(work.join("file10.txt"))));
+
+  // A single click after a double click starts over.
+  left(&mut app, CURRENT_X, FIRST_ROW + 1);
+  pump(&mut app);
+  left(&mut app, CURRENT_X, FIRST_ROW + 2);
+  assert_eq!(selected(&app), "blob.bin");
+  assert!(
+    !app
+      .take_commands()
+      .iter()
+      .any(|c| matches!(c, Command::Open(_)))
+  );
+}
+
+#[test]
+fn clicks_outside_entries_are_ignored() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "j");
+  for (x, y) in [
+    (CURRENT_X, FIRST_ROW + 7), // below the last entry
+    (8, FIRST_ROW),             // column separator
+    (30, FIRST_ROW),            // column separator
+    (0, FIRST_ROW),             // border
+    (CURRENT_X, 0),             // header
+    (CURRENT_X, HEIGHT - 1),    // status bar
+  ] {
+    left(&mut app, x, y);
+    assert_eq!(selected(&app), "beta", "click at ({x}, {y})");
+    assert_eq!(app.cwd, work);
+  }
+}
+
+#[test]
+fn wheel_moves_the_cursor() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  // A directory preview does not scroll on its own, so the wheel moves the cursor.
+  mouse(&mut app, MouseEventKind::ScrollDown, PREVIEW_X, FIRST_ROW);
+  assert_eq!(selected(&app), "file2.txt");
+  mouse(&mut app, MouseEventKind::ScrollDown, CURRENT_X, FIRST_ROW);
+  assert_eq!(app.cursor().index, 5);
+  mouse(&mut app, MouseEventKind::ScrollUp, CURRENT_X, FIRST_ROW);
+  assert_eq!(app.cursor().index, 2);
+}
+
+#[test]
+fn parent_column_click_and_wheel() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "l");
+  assert_eq!(app.cwd, work.join("alpha"));
+
+  // The wheel over the parent column steps through sibling directories.
+  mouse(&mut app, MouseEventKind::ScrollDown, PARENT_X, FIRST_ROW);
+  pump(&mut app);
+  assert_eq!(app.cwd, work.join("beta"));
+  mouse(&mut app, MouseEventKind::ScrollDown, PARENT_X, FIRST_ROW);
+  pump(&mut app);
+  assert_eq!(app.cwd, work.join("beta"), "no directory after beta");
+  mouse(&mut app, MouseEventKind::ScrollUp, PARENT_X, FIRST_ROW);
+  pump(&mut app);
+  assert_eq!(app.cwd, work.join("alpha"));
+
+  // A click goes to the parent with the clicked entry selected.
+  left(&mut app, PARENT_X, FIRST_ROW + 4);
+  pump(&mut app);
+  assert_eq!(app.cwd, work);
+  assert_eq!(selected(&app), "file10.txt");
+}
+
+#[test]
+fn preview_column_click_enters_the_directory() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  assert_eq!(selected(&app), "alpha");
+  left(&mut app, PREVIEW_X, FIRST_ROW + 1);
+  pump(&mut app);
+  assert_eq!(app.cwd, work.join("alpha"));
+  assert_eq!(selected(&app), "b.txt");
+
+  // A right click on a file's preview opens the file.
+  right(&mut app, PREVIEW_X, FIRST_ROW);
+  assert!(
+    app
+      .take_commands()
+      .contains(&Command::Open(work.join("alpha/b.txt")))
+  );
+}
+
+#[test]
+fn mouse_with_help_or_command_line_open() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "?");
+  left(&mut app, CURRENT_X, FIRST_ROW + 1);
+  assert!(!app.show_help);
+  assert_eq!(
+    selected(&app),
+    "alpha",
+    "the closing click is not also a selection"
+  );
+
+  press(&mut app, ":");
+  left(&mut app, CURRENT_X, FIRST_ROW + 1);
+  mouse(&mut app, MouseEventKind::ScrollDown, CURRENT_X, FIRST_ROW);
+  assert!(app.console.is_some());
+  assert_eq!(selected(&app), "alpha");
+}
+
+#[test]
+fn click_resets_a_pending_key_sequence() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "g");
+  assert!(app.keymap.is_pending());
+  left(&mut app, CURRENT_X, FIRST_ROW + 1);
+  assert!(!app.keymap.is_pending());
+  press(&mut app, "g");
+  assert_eq!(
+    selected(&app),
+    "beta",
+    "a lone g after the click does nothing"
+  );
+}
+
+#[test]
+fn double_click_opens_even_when_the_first_click_scrolls() {
+  let (_tmp, work) = fixture();
+  let long = work.join("long");
+  fs::create_dir(&long).unwrap();
+  for i in 0..20 {
+    fs::write(long.join(format!("f{i:02}")), "").unwrap();
+  }
+  let mut app = new_app(&long);
+  left(&mut app, CURRENT_X, FIRST_ROW + 7);
+  let first = selected(&app);
+  assert_eq!(first, "f07");
+  assert_ne!(app.cursor().offset, 0, "the click scrolled the list");
+  left(&mut app, CURRENT_X, FIRST_ROW + 7);
+  assert!(
+    app
+      .take_commands()
+      .contains(&Command::Open(long.join(first)))
+  );
+}
+
+/// A directory with `long.txt` (lines `line 0` to `line 99`), selected, and `short.txt`.
+fn long_text_app() -> (TempDir, App) {
+  let tmp = tempfile::tempdir().unwrap();
+  let text: String = (0..100).map(|i| format!("line {i}\n")).collect();
+  fs::write(tmp.path().join("long.txt"), text).unwrap();
+  fs::write(tmp.path().join("short.txt"), "short\n").unwrap();
+  let app = new_app(tmp.path());
+  (tmp, app)
+}
+
+fn preview_scroll(app: &App) -> usize {
+  app.preview.as_ref().unwrap().scroll
+}
+
+fn preview_lines(app: &App) -> usize {
+  match &app.preview.as_ref().unwrap().status {
+    PreviewStatus::Ready(p) => match &**p {
+      Preview::Text { lines, .. } => lines.len(),
+      other => panic!("unexpected {other:?}"),
+    },
+    other => panic!("unexpected {other:?}"),
+  }
+}
+
+#[test]
+fn keys_scroll_the_text_preview_independently_of_the_cursor() {
+  let (_tmp, mut app) = long_text_app();
+  assert_eq!(selected(&app), "long.txt");
+  press(&mut app, "<C-j><C-j><C-j>");
+  assert_eq!(preview_scroll(&app), 3);
+  assert_eq!(selected(&app), "long.txt", "the cursor stays");
+  let screen = render(&app);
+  assert!(screen[FIRST_ROW as usize].contains("line 3"));
+  press(&mut app, "<C-k>");
+  assert_eq!(preview_scroll(&app), 2);
+  press(&mut app, "<C-k><C-k><C-k>");
+  assert_eq!(preview_scroll(&app), 0, "stops at the top");
+
+  // Another entry starts at the top again.
+  press(&mut app, "<C-j>jk");
+  assert_eq!(preview_scroll(&app), 0);
+}
+
+#[test]
+fn scrolling_stops_at_the_end_of_a_complete_preview() {
+  let (_tmp, mut app) = long_text_app();
+  for _ in 0..200 {
+    press(&mut app, "<C-j>");
+  }
+  // 100 lines in 8 rows: the last line ends up on the bottom row.
+  assert_eq!(preview_scroll(&app), 92);
+  let screen = render(&app);
+  assert!(screen[FIRST_ROW as usize + 7].contains("line 99"));
+}
+
+#[test]
+fn wheel_over_a_text_preview_scrolls_it() {
+  let (_tmp, mut app) = long_text_app();
+  mouse(&mut app, MouseEventKind::ScrollDown, PREVIEW_X, FIRST_ROW);
+  assert_eq!(preview_scroll(&app), 3);
+  assert_eq!(selected(&app), "long.txt");
+  mouse(&mut app, MouseEventKind::ScrollDown, CURRENT_X, FIRST_ROW);
+  assert_eq!(
+    selected(&app),
+    "short.txt",
+    "over the current column it moves the cursor"
+  );
+}
+
+#[test]
+fn metadata_view_scrolls_and_toggling_resets_the_scroll() {
+  let (_tmp, mut app) = long_text_app();
+  app.set_size(WIDTH, 6); // two preview rows, fewer than the metadata block has
+  press(&mut app, "<C-j>");
+  press(&mut app, "i");
+  assert_eq!(preview_scroll(&app), 0);
+  let top = render_sized(&app, WIDTH, 6)[FIRST_ROW as usize].clone();
+  press(&mut app, "<C-j>");
+  assert_eq!(preview_scroll(&app), 1);
+  let scrolled = render_sized(&app, WIDTH, 6);
+  assert_ne!(scrolled[FIRST_ROW as usize], top);
+}
+
+#[test]
+fn scrolling_near_the_end_of_a_truncated_preview_loads_more() {
+  let (_tmp, mut app) = long_text_app();
+  app.config.preview.max_lines = 10;
+  press(&mut app, "R");
+  assert_eq!(preview_lines(&app), 10);
+  press(&mut app, "<C-j>");
+  assert_eq!(
+    preview_lines(&app),
+    100,
+    "extended previews are bounded by bytes only"
+  );
+  assert_eq!(preview_scroll(&app), 1, "the scroll position is kept");
+  // Leaving and coming back reuses the extended preview from the cache.
+  press(&mut app, "jk");
+  assert_eq!(preview_lines(&app), 100);
+}
+
+#[test]
+fn extended_previews_grow_by_bytes_until_the_file_is_read() {
+  let tmp = tempfile::tempdir().unwrap();
+  // 5000 lines of 10 bytes.
+  let text: String = (0..5000).map(|i| format!("line {i:04}\n")).collect();
+  fs::write(tmp.path().join("big.txt"), text).unwrap();
+  let mut app = new_app(tmp.path());
+  app.config.preview.max_bytes = 1024;
+  press(&mut app, "R");
+  let first = preview_lines(&app);
+  assert!(first <= 103, "{first} lines from 1 KiB");
+  // Nothing more is read until the end is within two screens.
+  for _ in 0..80 {
+    press(&mut app, "<C-j>");
+  }
+  assert_eq!(preview_lines(&app), first);
+  for _ in 0..20 {
+    press(&mut app, "<C-j>");
+  }
+  let second = preview_lines(&app);
+  assert!(second > 300 && second <= 410, "{second} lines from 4 KiB");
+  // Keep scrolling: the preview grows until the whole file is in.
+  for _ in 0..5000 {
+    press_keys_without_pump(&mut app, "<C-j>");
+    pump(&mut app);
+  }
+  assert_eq!(preview_lines(&app), 5000);
+}
+
+#[test]
+fn wheel_over_a_loading_file_preview_does_not_move_the_cursor() {
+  let (_tmp, mut app) = long_text_app();
+  press_keys_without_pump(&mut app, "j");
+  assert!(matches!(
+    app.preview.as_ref().unwrap().status,
+    PreviewStatus::Loading
+  ));
+  mouse(&mut app, MouseEventKind::ScrollUp, PREVIEW_X, FIRST_ROW);
+  assert_eq!(selected(&app), "short.txt");
 }

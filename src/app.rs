@@ -10,7 +10,8 @@ use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Position;
 
 use crate::action::Action;
 use crate::clipboard;
@@ -21,14 +22,32 @@ use crate::fs::sort::sort_entries_by;
 use crate::fs::{DirCount, DirListing, Entry, PasteMode, SortKey};
 use crate::graphics::EncodedImage;
 use crate::keymap::{Key, KeyResult, Keymap};
-use crate::nav::{Cursor, ScrollPos};
-use crate::preview::Preview;
+use crate::nav::{Cursor, ScrollPos, passive_offset};
+use crate::preview::{Preview, PreviewLimits};
 use crate::shell::{MacroContext, ShellFlags, ShellMode};
 use crate::vcs::{DirVcs, FileStatus, Mark, RepoStatus, VcsRequest};
 
 const PREVIEW_CACHE_LIMIT: usize = 128;
 const IMAGE_CACHE_LIMIT: usize = 8;
 const INFO_TIMEOUT: Duration = Duration::from_secs(4);
+/// Rows the cursor moves per mouse wheel step.
+const WHEEL_ROWS: isize = 3;
+/// Longest gap between two clicks on the same entry that counts as a double click.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// Most bytes a text preview reads after being extended by scrolling.
+const EXTENDED_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// The entry drawn on `row` of a parent or preview column `height` rows tall, scrolled the
+/// way the renderer scrolls it.
+fn passive_hit<'a>(
+  entries: &[&'a Entry],
+  selected: usize,
+  height: usize,
+  row: usize,
+) -> Option<&'a Entry> {
+  let offset = passive_offset(selected, entries.len(), height);
+  entries.get(offset + row).copied()
+}
 
 /// `1 item`, `3 items`.
 fn items(n: usize) -> String {
@@ -48,6 +67,8 @@ pub enum Command {
     entry: Entry,
     /// Size of the preview column (columns, rows), for encoding images.
     cells: Option<(u16, u16)>,
+    /// Replaces the configured limits, for a text preview extended by scrolling.
+    limits: Option<PreviewLimits>,
   },
   /// The pending preview is no longer wanted.
   CancelPreview,
@@ -114,9 +135,25 @@ pub struct PreviewSlot {
   pub status: PreviewStatus,
   /// The encoded image of an image preview; `None` when it could not be encoded.
   pub image: Option<Arc<EncodedImage>>,
+  /// First row of text or metadata shown; scrolls independently of the cursor.
+  pub scroll: usize,
+  /// How many times a truncated text preview was extended by scrolling to its end.
+  level: u32,
 }
 
 impl PreviewSlot {
+  fn new(path: PathBuf, stamp: (i64, u64), cells: Option<(u16, u16)>) -> Self {
+    PreviewSlot {
+      path,
+      stamp,
+      cells,
+      status: PreviewStatus::Loading,
+      image: None,
+      scroll: 0,
+      level: 0,
+    }
+  }
+
   /// Whether the content depends on the preview size and was made for a different one.
   fn stale_size(&self, cells: Option<(u16, u16)>) -> bool {
     let sized = match &self.status {
@@ -133,6 +170,7 @@ struct CachedPreview {
   cells: Option<(u16, u16)>,
   content: Arc<Preview>,
   image: Option<Arc<EncodedImage>>,
+  level: u32,
 }
 
 /// Entries copied (`yy`) or cut (`dd`), waiting to be pasted.
@@ -209,6 +247,9 @@ pub struct App {
   previous_dir: Option<PathBuf>,
   /// Entry to select once the given directory is listed again (after a rename).
   select_after_load: Option<(PathBuf, String)>,
+  /// The last left click in the current column (its row and the entry it selected), for
+  /// detecting double clicks.
+  last_click: Option<(Instant, usize, PathBuf)>,
   commands: Vec<Command>,
 }
 
@@ -259,6 +300,7 @@ impl App {
       vcs_force: HashSet::new(),
       previous_dir: None,
       select_after_load: None,
+      last_click: None,
       commands: Vec::new(),
     };
     app.enter_dir(start, select);
@@ -406,6 +448,33 @@ impl App {
     self.show_hidden || !entry.is_hidden()
   }
 
+  /// The entries the parent column shows (`listing` is the parent's) and the position of the
+  /// current directory among them. The current directory is kept even when it is hidden.
+  pub fn parent_entries<'a>(&self, listing: &'a DirListing) -> (Vec<&'a Entry>, Option<usize>) {
+    let entries: Vec<&Entry> = listing
+      .entries
+      .iter()
+      .filter(|e| self.is_visible(e) || e.path == self.cwd)
+      .collect();
+    let selected = entries.iter().position(|e| e.path == self.cwd);
+    (entries, selected)
+  }
+
+  /// The entries a directory preview shows and the one drawn selected: the entry last
+  /// selected in that directory, or the first.
+  pub fn preview_entries<'a>(&self, listing: &'a DirListing) -> (Vec<&'a Entry>, usize) {
+    let entries: Vec<&Entry> = listing
+      .entries
+      .iter()
+      .filter(|e| self.is_visible(e))
+      .collect();
+    let selected = self
+      .remembered(&listing.path)
+      .and_then(|name| entries.iter().position(|e| e.name == name))
+      .unwrap_or(0);
+    (entries, selected)
+  }
+
   // ---- updates ----
 
   pub fn handle_event(&mut self, event: Event) {
@@ -416,6 +485,7 @@ impl App {
         };
         self.handle_key(key);
       }
+      Event::Mouse(m) => self.handle_mouse(m),
       Event::Resize(w, h) => self.set_size(w, h),
       Event::Tick => self.tick(),
       Event::DirLoaded { path, result } => self.on_dir_loaded(path, result),
@@ -486,6 +556,157 @@ impl App {
     }
     if let KeyResult::Action(action) = self.keymap.feed(key) {
       self.dispatch(action);
+    }
+  }
+
+  /// Mouse input, following ranger: the wheel moves the cursor (over the parent column it
+  /// steps through sibling directories, over a text or metadata preview it scrolls that
+  /// preview), a left click selects the entry under it (in the
+  /// parent or preview column, by entering that column's directory), and a right click or
+  /// a double click opens it.
+  pub fn handle_mouse(&mut self, ev: MouseEvent) {
+    if self.show_help {
+      // Any click closes the help overlay, like any key.
+      if matches!(ev.kind, MouseEventKind::Down(_)) {
+        self.show_help = false;
+        self.keymap.reset();
+      }
+      return;
+    }
+    if self.console.is_some() {
+      return;
+    }
+    let inner = crate::ui::layout::body_inner(self.width, self.rows as u16);
+    let (cols, _) = crate::ui::layout::split_columns(inner, self.config.column_ratios);
+    let pos = Position::new(ev.column, ev.row);
+    let Some((column, area)) =
+      (0..3).find_map(|i| cols[i].filter(|r| r.contains(pos)).map(|r| (i, r)))
+    else {
+      return;
+    };
+    let row = (ev.row - area.y) as usize;
+    let last_click = self.last_click.take();
+    self.keymap.reset();
+    self.message = None;
+    match ev.kind {
+      MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+        let dir = if ev.kind == MouseEventKind::ScrollUp {
+          -1
+        } else {
+          1
+        };
+        // A file's preview scrolls on its own (or not at all, for images), decided by the
+        // selection rather than by whether the preview has loaded yet. Over a directory
+        // listing the wheel moves the cursor like the other columns.
+        let over_file = column == 2 && self.selected().is_some_and(|e| !e.is_dir());
+        if column == 0 {
+          self.step_parent(dir);
+        } else if over_file {
+          self.scroll_preview(dir * WHEEL_ROWS);
+        } else {
+          self.move_cursor(dir * WHEEL_ROWS);
+        }
+      }
+      MouseEventKind::Down(MouseButton::Left) => self.click(column, row, false, last_click),
+      MouseEventKind::Down(MouseButton::Right) => self.click(column, row, true, last_click),
+      _ => {}
+    }
+  }
+
+  /// A click on `row` of `column`; `open` for a right click.
+  fn click(
+    &mut self,
+    column: usize,
+    row: usize,
+    open: bool,
+    last_click: Option<(Instant, usize, PathBuf)>,
+  ) {
+    match column {
+      0 => {
+        let Some(parent) = self.cwd.parent().map(Path::to_path_buf) else {
+          return;
+        };
+        let Some(listing) = self.listing(&parent).cloned() else {
+          return;
+        };
+        let (entries, selected) = self.parent_entries(&listing);
+        if let Some(entry) = passive_hit(&entries, selected.unwrap_or(0), self.rows, row) {
+          self.click_passive(&parent, entry, open);
+        }
+      }
+      1 => {
+        // The first click may have scrolled the list, so a double click is two clicks on
+        // the same row, whatever entry is under it now, while the selection is unchanged.
+        let double = !open
+          && last_click.is_some_and(|(at, r, p)| {
+            r == row && at.elapsed() <= DOUBLE_CLICK && self.selected().is_some_and(|e| e.path == p)
+          });
+        if double {
+          return self.open_selected();
+        }
+        let index = self.cursor.offset + row;
+        let Some(path) = self.visible_entry(index).map(|e| e.path.clone()) else {
+          return;
+        };
+        self.set_cursor(index);
+        if open {
+          self.open_selected();
+        } else {
+          self.last_click = Some((Instant::now(), row, path));
+        }
+      }
+      _ => {
+        let Some(slot) = &self.preview else {
+          return;
+        };
+        let content = match &slot.status {
+          PreviewStatus::Ready(p) => Arc::clone(p),
+          _ => return,
+        };
+        let dir = slot.path.clone();
+        match &*content {
+          Preview::Directory(listing) => {
+            let (entries, selected) = self.preview_entries(listing);
+            if let Some(entry) = passive_hit(&entries, selected, self.rows, row) {
+              self.click_passive(&dir, entry, open);
+            }
+          }
+          // A file's preview: a right click opens the file, as in ranger.
+          _ if open => self.open_selected(),
+          _ => {}
+        }
+      }
+    }
+  }
+
+  /// A click on `entry`, listed in `dir` in the parent or preview column. A right click on a
+  /// directory enters it; otherwise `dir` is entered with `entry` selected.
+  fn click_passive(&mut self, dir: &Path, entry: &Entry, open: bool) {
+    if open && entry.is_dir() {
+      self.enter_dir(entry.path.clone(), None);
+    } else {
+      self.enter_dir(dir.to_path_buf(), Some(entry.name.clone()));
+    }
+  }
+
+  /// Enters the next (`delta` > 0) or previous sibling directory of the current one.
+  fn step_parent(&mut self, delta: isize) {
+    let Some(parent) = self.cwd.parent().map(Path::to_path_buf) else {
+      return;
+    };
+    let Some(listing) = self.listing(&parent).cloned() else {
+      return;
+    };
+    let (entries, Some(at)) = self.parent_entries(&listing) else {
+      return;
+    };
+    let next = if delta > 0 {
+      entries[at + 1..].iter().find(|e| e.is_dir())
+    } else {
+      entries[..at].iter().rev().find(|e| e.is_dir())
+    };
+    if let Some(entry) = next {
+      self.enter_dir(entry.path.clone(), None);
     }
   }
 
@@ -948,7 +1169,7 @@ impl App {
 
   /// Size of the preview column (columns, rows), or `None` when it is hidden or empty.
   pub fn preview_cells(&self) -> Option<(u16, u16)> {
-    let inner = ratatui::layout::Rect::new(0, 0, self.width.saturating_sub(2), self.rows as u16);
+    let inner = crate::ui::layout::body_inner(self.width, self.rows as u16);
     let (cols, _) = crate::ui::layout::split_columns(inner, self.config.column_ratios);
     cols[2]
       .filter(|r| r.width > 0 && r.height > 0)
@@ -990,6 +1211,12 @@ impl App {
       Action::HalfPageDown => self.move_cursor((page / 2).max(1)),
       Action::PageUp => self.move_cursor(-page),
       Action::PageDown => self.move_cursor(page),
+      Action::PreviewUp => {
+        self.scroll_preview(-1);
+      }
+      Action::PreviewDown => {
+        self.scroll_preview(1);
+      }
       Action::MoveTop => self.set_cursor(0),
       Action::MoveBottom => self.set_cursor(self.visible.len().saturating_sub(1)),
       Action::GoParent => self.go_parent(),
@@ -1031,6 +1258,9 @@ impl App {
       Action::Reload => self.reload(),
       Action::ToggleMetadata => {
         self.show_metadata = !self.show_metadata;
+        if let Some(slot) = &mut self.preview {
+          slot.scroll = 0;
+        }
         let mode = if self.show_metadata {
           "metadata"
         } else {
@@ -1328,11 +1558,8 @@ impl App {
       && let Some(listing) = self.listing(&entry.path).cloned()
     {
       self.preview = Some(PreviewSlot {
-        path: entry.path,
-        stamp,
-        cells,
         status: PreviewStatus::Ready(Arc::new(Preview::Directory(listing))),
-        image: None,
+        ..PreviewSlot::new(entry.path, stamp, cells)
       });
       self.cancel_preview();
       return;
@@ -1349,26 +1576,118 @@ impl App {
       && (cached.cells == cells || !matches!(*cached.content, Preview::Image(_)))
     {
       self.preview = Some(PreviewSlot {
-        path: entry.path,
-        stamp,
-        cells,
         status: PreviewStatus::Ready(Arc::clone(&cached.content)),
         image: cached.image.clone(),
+        level: cached.level,
+        ..PreviewSlot::new(entry.path, stamp, cells)
       });
       self.cancel_preview();
       return;
     }
+    self.preview = Some(PreviewSlot::new(entry.path.clone(), stamp, cells));
+    self.request_preview(entry, cells, None);
+  }
+
+  fn request_preview(
+    &mut self,
+    entry: Entry,
+    cells: Option<(u16, u16)>,
+    limits: Option<PreviewLimits>,
+  ) {
     self.next_preview_id += 1;
     let id = self.next_preview_id;
     self.pending_preview = Some(id);
-    self.preview = Some(PreviewSlot {
-      path: entry.path.clone(),
-      stamp,
+    self.commands.push(Command::Preview {
+      id,
+      entry,
       cells,
-      status: PreviewStatus::Loading,
-      image: None,
+      limits,
     });
-    self.commands.push(Command::Preview { id, entry, cells });
+  }
+
+  /// Rows of the preview that can scroll: text, highlighted text and metadata. `None` for
+  /// directory listings, images and previews that are not ready.
+  fn preview_len(&self) -> Option<usize> {
+    let slot = self.preview.as_ref()?;
+    if self.show_metadata
+      && let Some(entry) = self
+        .selected()
+        .filter(|e| !e.is_dir() && e.path == slot.path)
+    {
+      return Some(crate::ui::columns::metadata_rows(entry, &slot.status).len());
+    }
+    match &slot.status {
+      PreviewStatus::Ready(p) => match &**p {
+        Preview::Text { lines, .. } => Some(lines.len()),
+        Preview::Highlighted { lines, .. } => Some(lines.len()),
+        Preview::Metadata(rows) => Some(rows.len()),
+        Preview::Directory(_) | Preview::Image(_) => None,
+      },
+      _ => None,
+    }
+  }
+
+  /// Scrolls the preview by `delta` rows, keeping its last row at the bottom of the column
+  /// at most. Returns false when the preview does not scroll.
+  fn scroll_preview(&mut self, delta: isize) -> bool {
+    let Some(len) = self.preview_len() else {
+      return false;
+    };
+    let height = self.preview_cells().map_or(0, |(_, h)| h as usize);
+    let Some(slot) = self.preview.as_mut() else {
+      return false;
+    };
+    let max = len.saturating_sub(height);
+    slot.scroll = slot.scroll.saturating_add_signed(delta).min(max);
+    // Nearing the end of a truncated text: ask for more of the file in the background.
+    if !self.show_metadata && slot.scroll + 2 * height >= len {
+      self.extend_preview();
+    }
+    true
+  }
+
+  /// Requests the selected text preview again with larger limits when it was truncated.
+  /// The current content stays shown, at the same scroll position, until the result comes.
+  fn extend_preview(&mut self) {
+    if self.pending_preview.is_some() {
+      return;
+    }
+    let Some(slot) = &self.preview else {
+      return;
+    };
+    let truncated = match &slot.status {
+      PreviewStatus::Ready(p) => match &**p {
+        Preview::Text { truncated, .. } | Preview::Highlighted { truncated, .. } => *truncated,
+        _ => false,
+      },
+      _ => false,
+    };
+    let Some(entry) = self.selected().filter(|e| e.path == slot.path).cloned() else {
+      return;
+    };
+    // Each extension reads 4 times more bytes, up to a ceiling. Lines are no longer capped,
+    // so a file of many short lines is not cut off before the byte limit.
+    let base = self.config.preview;
+    let bytes = |level: u32| {
+      base
+        .max_bytes
+        .saturating_mul(4usize.saturating_pow(level))
+        .min(EXTENDED_MAX_BYTES)
+    };
+    if !truncated || (slot.level > 0 && bytes(slot.level) >= EXTENDED_MAX_BYTES) {
+      return;
+    }
+    let level = slot.level + 1;
+    let limits = PreviewLimits {
+      max_bytes: bytes(level),
+      max_lines: usize::MAX,
+      ..base
+    };
+    let cells = slot.cells;
+    if let Some(slot) = self.preview.as_mut() {
+      slot.level = level;
+    }
+    self.request_preview(entry, cells, Some(limits));
   }
 
   fn on_preview(
@@ -1426,6 +1745,7 @@ impl App {
               cells: slot.cells,
               content: Arc::clone(&content),
               image: image.clone(),
+              level: slot.level,
             },
           );
         }

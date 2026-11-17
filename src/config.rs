@@ -39,6 +39,10 @@ pub struct Config {
   /// Show the keys that can follow an unfinished key sequence, like which-key in vim and
   /// emacs.
   pub which_key: bool,
+  /// React to clicks and the wheel (like ranger's `mouse_enabled`). Capturing the mouse
+  /// takes over the terminal's own text selection, which then needs a modifier (usually
+  /// Shift).
+  pub mouse_enabled: bool,
   pub preview: PreviewLimits,
   /// Syntax highlighting of text previews through `bat`.
   pub highlight: HighlightConfig,
@@ -61,6 +65,7 @@ impl Default for Config {
       scroll_offset: 8,
       preview_images: true,
       which_key: true,
+      mouse_enabled: true,
       preview: PreviewLimits::default(),
       highlight: HighlightConfig::default(),
       theme: Theme::default(),

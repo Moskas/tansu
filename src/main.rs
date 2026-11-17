@@ -65,6 +65,11 @@ fn main() -> Result<()> {
   let mut guard = TerminalGuard::new()?;
   // The terminal query reads stdin, so it has to finish before the input thread starts.
   let images = app.config.preview_images.then(ImageEncoder::detect);
+  if app.config.mouse_enabled
+    && let Err(e) = guard.enable_mouse()
+  {
+    app.set_error(format!("{e:#}"));
+  }
   let (tx, rx) = mpsc::channel();
   let input = event::spawn_input_thread(tx.clone());
   let registry = PreviewRegistry::configured(&app.config.highlight, app.config.preview_images);

@@ -15,6 +15,8 @@ pub enum Action {
   HalfPageDown,
   PageUp,
   PageDown,
+  PreviewUp,
+  PreviewDown,
   GoParent,
   Open,
   GoHome,
@@ -43,7 +45,7 @@ pub enum Action {
 }
 
 impl Action {
-  pub const ALL: [Action; 36] = [
+  pub const ALL: [Action; 38] = [
     Action::MoveUp,
     Action::MoveDown,
     Action::MoveTop,
@@ -52,6 +54,8 @@ impl Action {
     Action::HalfPageDown,
     Action::PageUp,
     Action::PageDown,
+    Action::PreviewUp,
+    Action::PreviewDown,
     Action::GoParent,
     Action::Open,
     Action::GoHome,
@@ -93,6 +97,8 @@ impl Action {
       Action::HalfPageDown => "half_page_down",
       Action::PageUp => "page_up",
       Action::PageDown => "page_down",
+      Action::PreviewUp => "preview_up",
+      Action::PreviewDown => "preview_down",
       Action::GoParent => "go_parent",
       Action::Open => "open",
       Action::GoHome => "go_home",
@@ -134,6 +140,8 @@ impl Action {
       Action::HalfPageDown => "Half page down",
       Action::PageUp => "Page up",
       Action::PageDown => "Page down",
+      Action::PreviewUp => "Scroll the preview up",
+      Action::PreviewDown => "Scroll the preview down",
       Action::GoParent => "Go to parent directory",
       Action::Open => "Enter directory / open file",
       Action::GoHome => "Go to home directory",

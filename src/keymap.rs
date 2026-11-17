@@ -246,6 +246,8 @@ pub const DEFAULT_BINDINGS: &[(&str, Action)] = &[
   ("<C-u>", Action::HalfPageUp),
   ("<PageDown>", Action::PageDown),
   ("<PageUp>", Action::PageUp),
+  ("<C-j>", Action::PreviewDown),
+  ("<C-k>", Action::PreviewUp),
   ("~", Action::GoHome),
   (".", Action::ToggleHidden),
   ("i", Action::ToggleMetadata),

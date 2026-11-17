@@ -307,7 +307,7 @@ fn spawn_vcs_worker(tx: Sender<Event>) -> Sender<VcsRequest> {
 }
 
 /// A preview request: the job id, the entry, and the preview column size.
-type PreviewJob = (u64, Entry, Option<(u16, u16)>);
+type PreviewJob = (u64, Entry, Option<(u16, u16)>, Option<PreviewLimits>);
 
 /// Background execution: one thread per directory listing, latest-wins workers for
 /// previews and item counts so stale work is dropped as the cursor moves, and an ordered
@@ -332,12 +332,16 @@ impl Runtime {
     opener: String,
   ) -> Self {
     let ptx = tx.clone();
-    let previews = LatestWorker::spawn("preview", move |(id, entry, cells): PreviewJob, token| {
-      let encoder = images.as_ref();
-      if let Some(ev) = run_preview(&registry, limits, encoder, id, &entry, cells, token) {
-        let _ = ptx.send(ev);
-      }
-    });
+    let previews = LatestWorker::spawn(
+      "preview",
+      move |(id, entry, cells, extended): PreviewJob, token| {
+        let encoder = images.as_ref();
+        let limits = extended.unwrap_or(limits);
+        if let Some(ev) = run_preview(&registry, limits, encoder, id, &entry, cells, token) {
+          let _ = ptx.send(ev);
+        }
+      },
+    );
     let ctx = tx.clone();
     let counts = LatestWorker::spawn("counts", move |dirs: Vec<PathBuf>, token| {
       run_counts(&dirs, token, &mut |ev| {
@@ -370,7 +374,12 @@ impl Runtime {
           return Some(format!("could not start listing: {e}"));
         }
       }
-      Command::Preview { id, entry, cells } => self.previews.submit((id, entry, cells)),
+      Command::Preview {
+        id,
+        entry,
+        cells,
+        limits: extended,
+      } => self.previews.submit((id, entry, cells, extended)),
       Command::CancelPreview => self.previews.cancel(),
       Command::CountDirs(dirs) => self.counts.submit(dirs),
       Command::ZoxideAdd(dir) => {
@@ -486,7 +495,13 @@ pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLim
   let token = CancelToken::never();
   match cmd {
     Command::LoadDir(path) => vec![load_dir(&path)],
-    Command::Preview { id, entry, cells } => {
+    Command::Preview {
+      id,
+      entry,
+      cells,
+      limits: extended,
+    } => {
+      let limits = extended.unwrap_or(limits);
       run_preview(registry, limits, None, id, &entry, cells, &token)
         .into_iter()
         .collect()

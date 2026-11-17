@@ -5,7 +5,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crossterm::event::{self as ct, KeyEvent};
+use crossterm::event::{self as ct, KeyEvent, MouseEvent, MouseEventKind};
 
 use crate::fs::{DirCount, DirListing, PasteMode};
 use crate::graphics::EncodedImage;
@@ -17,6 +17,8 @@ use crate::vcs::{DirVcs, RepoStatus};
 #[derive(Debug)]
 pub enum Event {
   Key(KeyEvent),
+  /// A button press or wheel step; motion and releases are dropped by the input thread.
+  Mouse(MouseEvent),
   Resize(u16, u16),
   /// Emitted when no other event arrived within the tick interval.
   Tick,
@@ -128,6 +130,13 @@ pub fn spawn_input_thread(tx: Sender<Event>) -> InputHandle {
       }
       let ev = match ct::read() {
         Ok(ct::Event::Key(k)) => Event::Key(k),
+        // Capture reports every pointer move; forwarding those would redraw on each one.
+        Ok(ct::Event::Mouse(m)) => match m.kind {
+          MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            Event::Mouse(m)
+          }
+          _ => continue,
+        },
         Ok(ct::Event::Resize(w, h)) => Event::Resize(w, h),
         Ok(_) => continue,
         Err(_) => return,
