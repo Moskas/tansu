@@ -595,9 +595,17 @@ fn cursor_style(base: Style, theme: &Theme) -> Style {
     (None, None) => base.add_modifier(Modifier::REVERSED),
     (fg, bg) => {
       let entry = base.fg.unwrap_or(theme.fg.0);
-      base
-        .fg(fg.map_or(entry, |c| c.0))
-        .bg(bg.map_or(entry, |c| c.0))
+      let fg = fg.map_or(entry, |c| c.0);
+      match bg {
+        Some(bg) => base.fg(fg).bg(bg.0),
+        // The terminal's default foreground cannot be set as a background; reverse video
+        // puts it there (and `fg`, set as the background, in front).
+        None if entry == Color::Reset => base
+          .fg(Color::Reset)
+          .bg(fg)
+          .add_modifier(Modifier::REVERSED),
+        None => base.fg(fg).bg(entry),
+      }
     }
   }
 }

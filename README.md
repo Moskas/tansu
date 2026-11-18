@@ -583,50 +583,52 @@ command = "bat"
 theme = "ansi"        # passed as --theme; "" uses bat's own configuration
 
 # Colors: "#rrggbb", a name ("red", "lightblue"), a 256-color index ("208"),
-# or "reset" for the terminal default. Defaults are a Gruvbox-dark palette.
+# or "reset" for the terminal default. The defaults are the terminal's own colors: its
+# default foreground and the 16 palette colors, which a base16 scheme sets. "gray" is
+# color 7 (base05), "darkgray" color 8 (base03), and the "light" names are colors 9-14.
 [theme]
-fg = "#ebdbb2"
-dim = "#928374"
-border = "#d5c4a1"
-header_user = "#b8bb26"
+fg = "reset"
+dim = "darkgray"
+border = "gray"
+header_user = "lightgreen"
 header_path = "lightblue"
-directory = "lightblue"   # terminal palette bright blue, as in ranger
-file = "#ebdbb2"
-executable = "#b8bb26"
-symlink = "#8ec07c"
-broken_link = "#d3869b"
-archive = "#fb4934"
-image = "#fabd2f"
-video = "#d3869b"
-audio = "#d3869b"
-document = "#ebdbb2"
-code = "#ebdbb2"
-special = "#d79921"
-marked = "#fabd2f"        # marked entries, drawn bold
-# cursor_fg = "#282828"   # unset: selected rows use reverse video, like ranger
-# cursor_bg = "#7c9f88"
-status_fg = "#d5c4a1"
-status_perms = "#8ec07c"
-status_perms_other = "#d3869b"
-error = "#fb4934"
-progress = "#fabd2f"       # task progress bars
-progress_track = "#3c3836" # the empty part of a progress bar
-success = "#b8bb26"        # finished tasks
-warning = "#fe8019"        # paste conflicts
-help_key = "#fabd2f"
-help_group = "#fb4934"
-vcs_sync = "#b8bb26"
-vcs_changed = "#fb4934"
-vcs_staged = "#b8bb26"
-vcs_untracked = "#8ec07c"
-vcs_conflict = "#d3869b"
-vcs_ignored = "#ebdbb2"
-vcs_ahead = "#83a598"
-vcs_behind = "#fb4934"
-vcs_diverged = "#d3869b"
-vcs_info = "#83a598"
-vcs_date = "#8ec07c"
-vcs_commit = "#fabd2f"
+directory = "lightblue"   # bright blue, as in ranger
+file = "reset"
+executable = "lightgreen"
+symlink = "lightcyan"
+broken_link = "lightmagenta"
+archive = "lightred"
+image = "lightyellow"
+video = "lightmagenta"
+audio = "lightmagenta"
+document = "reset"
+code = "reset"
+special = "yellow"
+marked = "lightyellow"    # marked entries, drawn bold
+# cursor_fg = "black"     # unset: selected rows use reverse video, like ranger
+# cursor_bg = "lightcyan"
+status_fg = "reset"
+status_perms = "lightcyan"
+status_perms_other = "lightmagenta"
+error = "lightred"
+progress = "lightyellow"   # task progress bars
+progress_track = "darkgray" # the empty part of a progress bar
+success = "lightgreen"     # finished tasks
+warning = "yellow"         # paste conflicts
+help_key = "lightyellow"
+help_group = "lightred"
+vcs_sync = "lightgreen"
+vcs_changed = "lightred"
+vcs_staged = "lightgreen"
+vcs_untracked = "lightcyan"
+vcs_conflict = "lightmagenta"
+vcs_ignored = "reset"
+vcs_ahead = "lightblue"
+vcs_behind = "lightred"
+vcs_diverged = "lightmagenta"
+vcs_info = "lightblue"
+vcs_date = "lightcyan"
+vcs_commit = "lightyellow"
 
 # Key notation follows vim: plain characters, sequences ("gg"), and <...> for special
 # keys and modifiers (<C-d>, <A-x>, <S-Tab>, <Enter>, <Esc>, <Space>, <lt>, <F5>).

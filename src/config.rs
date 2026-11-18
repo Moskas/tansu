@@ -160,11 +160,26 @@ impl From<ThemeColor> for Color {
   }
 }
 
-const fn hex(rgb: u32) -> ThemeColor {
-  ThemeColor(Color::Rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8))
-}
+// Default colors are the terminal's own: its default foreground and the 16 palette colors a
+// base16 scheme sets, so tansu follows the terminal's theme. The bright variants (9-14) are
+// used, as ranger does; base16 makes them the same as the normal ones.
+/// The terminal's default foreground.
+const DEFAULT: ThemeColor = ThemeColor(Color::Reset);
+/// Color 7 (base05, the foreground in base16).
+const FOREGROUND: ThemeColor = ThemeColor(Color::Gray);
+/// Color 8 (base03, comments in base16).
+const COMMENT: ThemeColor = ThemeColor(Color::DarkGray);
+const RED: ThemeColor = ThemeColor(Color::LightRed);
+const GREEN: ThemeColor = ThemeColor(Color::LightGreen);
+const YELLOW: ThemeColor = ThemeColor(Color::LightYellow);
+/// Color 3. base16 has no orange among the 16, so warnings and special files use the
+/// normal yellow, which other palettes draw darker than color 11.
+const DARK_YELLOW: ThemeColor = ThemeColor(Color::Yellow);
+const BLUE: ThemeColor = ThemeColor(Color::LightBlue);
+const MAGENTA: ThemeColor = ThemeColor(Color::LightMagenta);
+const CYAN: ThemeColor = ThemeColor(Color::LightCyan);
 
-/// All colors used by the UI. Defaults to a Gruvbox-dark palette.
+/// All colors used by the UI. Defaults to the terminal's palette (see [`DEFAULT`]).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Theme {
@@ -224,49 +239,49 @@ pub struct Theme {
 impl Default for Theme {
   fn default() -> Self {
     Theme {
-      fg: hex(0xebdbb2),
-      dim: hex(0x928374),
-      border: hex(0xd5c4a1),
-      header_user: hex(0xb8bb26),
-      header_path: ThemeColor(Color::LightBlue),
-      // The terminal palette's bright blue, the color ranger uses for directories.
-      directory: ThemeColor(Color::LightBlue),
-      file: hex(0xebdbb2),
-      executable: hex(0xb8bb26),
-      symlink: hex(0x8ec07c),
-      broken_link: hex(0xd3869b),
-      archive: hex(0xfb4934),
-      image: hex(0xfabd2f),
-      video: hex(0xd3869b),
-      audio: hex(0xd3869b),
-      document: hex(0xebdbb2),
-      code: hex(0xebdbb2),
-      special: hex(0xd79921),
-      marked: hex(0xfabd2f),
+      fg: DEFAULT,
+      dim: COMMENT,
+      border: FOREGROUND,
+      header_user: GREEN,
+      header_path: BLUE,
+      // Bright blue, the color ranger uses for directories.
+      directory: BLUE,
+      file: DEFAULT,
+      executable: GREEN,
+      symlink: CYAN,
+      broken_link: MAGENTA,
+      archive: RED,
+      image: YELLOW,
+      video: MAGENTA,
+      audio: MAGENTA,
+      document: DEFAULT,
+      code: DEFAULT,
+      special: DARK_YELLOW,
+      marked: YELLOW,
       cursor_fg: None,
       cursor_bg: None,
-      status_fg: hex(0xd5c4a1),
-      status_perms: hex(0x8ec07c),
-      status_perms_other: hex(0xd3869b),
-      error: hex(0xfb4934),
-      progress: hex(0xfabd2f),
-      progress_track: hex(0x3c3836),
-      success: hex(0xb8bb26),
-      warning: hex(0xfe8019),
-      help_key: hex(0xfabd2f),
-      help_group: hex(0xfb4934),
-      vcs_sync: hex(0xb8bb26),
-      vcs_changed: hex(0xfb4934),
-      vcs_staged: hex(0xb8bb26),
-      vcs_untracked: hex(0x8ec07c),
-      vcs_conflict: hex(0xd3869b),
-      vcs_ignored: hex(0xebdbb2),
-      vcs_ahead: hex(0x83a598),
-      vcs_behind: hex(0xfb4934),
-      vcs_diverged: hex(0xd3869b),
-      vcs_info: hex(0x83a598),
-      vcs_date: hex(0x8ec07c),
-      vcs_commit: hex(0xfabd2f),
+      status_fg: DEFAULT,
+      status_perms: CYAN,
+      status_perms_other: MAGENTA,
+      error: RED,
+      progress: YELLOW,
+      progress_track: COMMENT,
+      success: GREEN,
+      warning: DARK_YELLOW,
+      help_key: YELLOW,
+      help_group: RED,
+      vcs_sync: GREEN,
+      vcs_changed: RED,
+      vcs_staged: GREEN,
+      vcs_untracked: CYAN,
+      vcs_conflict: MAGENTA,
+      vcs_ignored: DEFAULT,
+      vcs_ahead: BLUE,
+      vcs_behind: RED,
+      vcs_diverged: MAGENTA,
+      vcs_info: BLUE,
+      vcs_date: CYAN,
+      vcs_commit: YELLOW,
     }
   }
 }
