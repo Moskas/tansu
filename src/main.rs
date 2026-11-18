@@ -136,6 +136,8 @@ fn main() -> Result<()> {
         break;
       }
     }
+    // A steady stream of task progress would keep `Tick` from ever arriving.
+    app.tick();
     if app.should_quit {
       break;
     }

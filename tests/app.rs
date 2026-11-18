@@ -1151,10 +1151,12 @@ fn yy_and_pp_copy_the_selection_without_overwriting() {
   );
   assert!(work.join("file2.txt").exists(), "the source is kept");
 
-  // The buffer stays, and existing names get ranger's suffixes.
+  // The buffer stays. A taken name is asked about; renaming gives ranger's suffixes.
   press(&mut app, "pp");
+  assert!(app.jobs.prompting().is_some());
+  press(&mut app, "r");
   assert_eq!(selected(&app), "file2.txt_");
-  press(&mut app, "pp");
+  press(&mut app, "ppr");
   assert_eq!(selected(&app), "file2.txt_0");
   let mut listed = names(&app);
   listed.sort();
@@ -1208,7 +1210,18 @@ fn uy_and_ud_clear_the_buffer() {
 fn pasting_into_the_same_directory() {
   let (_tmp, work) = fixture();
   let mut app = new_app(&work);
+  // A copy into its own directory asks too, offering only skip and rename.
   press(&mut app, "jjjyypp");
+  let screen = rendered(&app);
+  assert!(screen.contains("file2.txt is already in"), "{screen}");
+  assert!(
+    screen.contains("s skip   r rename → file2.txt_"),
+    "{screen}"
+  );
+  assert!(!screen.contains("o overwrite"), "{screen}");
+  press(&mut app, "o");
+  assert!(app.jobs.prompting().is_some(), "o does not apply");
+  press(&mut app, "r");
   assert_eq!(selected(&app), "file2.txt_");
   assert_eq!(
     fs::read_to_string(work.join("file2.txt_")).unwrap(),
@@ -1268,6 +1281,167 @@ fn a_failed_paste_is_reported_and_the_cut_buffer_kept() {
   );
   assert!(work.join("file2.txt").exists());
   assert!(app.buffer.is_some());
+}
+
+// ---- tasks ----
+
+fn rendered(app: &App) -> String {
+  render_sized(app, 100, 24).join("\n")
+}
+
+#[test]
+fn pp_asks_about_each_taken_name() {
+  let (_tmp, work) = fixture();
+  fs::write(work.join("beta/file2.txt"), "old\n").unwrap();
+  fs::write(work.join("beta/file10.txt"), "keep\n").unwrap();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj<Space><Space>yyggjlpp");
+  assert!(app.tasks_visible());
+  let screen = rendered(&app);
+  assert!(screen.contains("Copy · conflict 1 of 2"), "{screen}");
+  assert!(screen.contains("file2.txt already exists in"), "{screen}");
+  assert!(screen.contains("o overwrite   s skip   n keep newer   r rename → file2.txt_"));
+  assert!(screen.contains("[ ] apply to the remaining conflict (a toggles)"));
+  assert!(screen.contains("X cancel task  esc decide later"));
+  // Nothing is pasted until every conflict is answered.
+  press(&mut app, "o");
+  assert_eq!(
+    fs::read_to_string(work.join("beta/file2.txt")).unwrap(),
+    "old\n"
+  );
+  assert!(rendered(&app).contains("Copy · conflict 2 of 2"));
+  press(&mut app, "s");
+  assert_eq!(message(&app), "copied file2.txt, skipped 1");
+  assert_eq!(
+    fs::read_to_string(work.join("beta/file2.txt")).unwrap(),
+    "two\n"
+  );
+  assert_eq!(
+    fs::read_to_string(work.join("beta/file10.txt")).unwrap(),
+    "keep\n"
+  );
+  assert!(app.jobs.list.is_empty());
+}
+
+#[test]
+fn n_keeps_whichever_file_is_newer() {
+  let (_tmp, work) = fixture();
+  fs::write(work.join("beta/file2.txt"), "newer\n").unwrap();
+  let old = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+  fs::File::options()
+    .write(true)
+    .open(work.join("file2.txt"))
+    .unwrap()
+    .set_modified(old)
+    .unwrap();
+  let mut app = new_app(&work);
+  press(&mut app, "jjjyyggjlpp");
+  assert!(rendered(&app).contains("newer"));
+  press(&mut app, "n");
+  assert_eq!(message(&app), "skipped 1 item");
+  assert_eq!(
+    fs::read_to_string(work.join("beta/file2.txt")).unwrap(),
+    "newer\n"
+  );
+}
+
+#[test]
+fn a_conflict_can_wait_in_the_background_or_be_cancelled() {
+  let (_tmp, work) = fixture();
+  fs::write(work.join("beta/file2.txt"), "old\n").unwrap();
+  let mut app = new_app(&work);
+  press(&mut app, "jjjyyggjlpp<Esc>");
+  assert!(!app.tasks_visible());
+  // Keys reach the file list again, and the status bar says what waits.
+  press(&mut app, "h");
+  assert_eq!(app.cwd, work);
+  assert!(rendered(&app).contains("! copy needs an answer (w)"));
+  press(&mut app, "w");
+  assert!(app.tasks_visible());
+  press(&mut app, "X");
+  assert_eq!(message(&app), "cancelled copy of file2.txt");
+  assert!(app.jobs.list.is_empty());
+  assert_eq!(
+    fs::read_to_string(work.join("beta/file2.txt")).unwrap(),
+    "old\n"
+  );
+}
+
+#[test]
+fn w_shows_a_task_whose_keys_pause_cancel_and_hide_it() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjjyyggjl");
+  press_keys_without_pump(&mut app, "pp");
+  // Too new to be shown on its own.
+  assert!(!app.tasks_visible());
+  press_keys_without_pump(&mut app, "w");
+  assert!(app.tasks_visible());
+  let screen = rendered(&app);
+  assert!(screen.contains(" Copying "), "{screen}");
+  assert!(screen.contains(" queued "), "{screen}");
+  assert!(
+    screen.contains("b background  p pause  x cancel"),
+    "{screen}"
+  );
+  assert!(screen.contains("→ "), "{screen}");
+  let id = app.jobs.list[0].id;
+  press_keys_without_pump(&mut app, "px");
+  let cmds = app.take_commands();
+  assert!(cmds.contains(&Command::PauseJob(id, true)));
+  assert!(cmds.contains(&Command::CancelJob(id)));
+  // `x` is the popup's here, not extract.
+  assert!(!cmds.iter().any(|c| matches!(c, Command::Extract { .. })));
+  press_keys_without_pump(&mut app, "b");
+  assert!(!app.tasks_visible());
+  assert!(rendered(&app).contains("‖ copy"));
+}
+
+#[test]
+fn several_tasks_are_listed_with_the_running_one_first() {
+  use tansu::jobs::Progress;
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjjyyggjl");
+  press_keys_without_pump(&mut app, "pppp");
+  let first = app.jobs.list[0].id;
+  app.handle_event(Event::JobProgress {
+    job: first,
+    progress: Progress {
+      files_done: 0,
+      files_total: Some(1),
+      bytes_done: 2,
+      bytes_total: Some(4),
+      current: "file2.txt".to_string(),
+    },
+  });
+  press_keys_without_pump(&mut app, "w");
+  let screen = rendered(&app);
+  assert!(screen.contains(" Tasks "), "{screen}");
+  assert!(screen.contains("1 running · 1 queued"), "{screen}");
+  assert!(screen.contains(" 50%"), "{screen}");
+  assert!(screen.contains("waiting for Copy to finish"), "{screen}");
+  assert!(
+    screen.contains("j/k select  p pause  x cancel  esc hide"),
+    "{screen}"
+  );
+  press_keys_without_pump(&mut app, "jx");
+  let second = app.jobs.list[1].id;
+  assert!(app.take_commands().contains(&Command::CancelJob(second)));
+}
+
+#[test]
+fn a_task_shown_long_enough_leaves_a_toast() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjjyyggjl");
+  press_keys_without_pump(&mut app, "pp");
+  std::thread::sleep(tansu::jobs::SHOW_AFTER + Duration::from_millis(50));
+  assert!(app.tasks_visible());
+  pump(&mut app);
+  assert!(!app.tasks_visible());
+  let screen = rendered(&app);
+  assert!(screen.contains("✓ Copied file2.txt → "), "{screen}");
 }
 
 #[test]
@@ -1478,7 +1652,21 @@ fn yy_and_dd_act_on_all_marked_entries() {
   // Moved entries lose their marks.
   press(&mut app, "v");
   assert_eq!(marked_names(&app).len(), 2);
+  // Both names are taken by the copies: one answer for both.
   press(&mut app, "ddhpp");
+  assert_eq!(
+    app
+      .jobs
+      .prompting()
+      .unwrap()
+      .prompt
+      .as_ref()
+      .unwrap()
+      .conflicts
+      .len(),
+    2
+  );
+  press(&mut app, "ar");
   assert_eq!(message(&app), "moved 2 items");
   assert!(!work.join("beta/file2.txt").exists());
   assert!(

@@ -13,6 +13,7 @@ use zip::CompressionMethod;
 
 use super::{Compression, Contents, ListError, Member, MemberKind};
 use crate::fs::meta::format_mtime;
+use crate::jobs::Meter;
 
 /// Listing a compressed tar means decompressing it; this much is read at most, so a huge
 /// archive does not keep a core busy for minutes.
@@ -333,7 +334,9 @@ pub fn zip_supported(path: &Path) -> io::Result<bool> {
 /// Members are written one by one so a damaged one does not stop the rest. Paths leading
 /// outside `dir` are skipped, and links are made last, only when they point inside `dir`:
 /// with nothing written after them, nothing can be written through them.
-pub fn extract_zip(path: &Path, dir: &Path) -> io::Result<Vec<String>> {
+///
+/// `meter` counts members (as they are started) and the bytes written.
+pub fn extract_zip(path: &Path, dir: &Path, meter: &mut Meter) -> io::Result<Vec<String>> {
   let mut zip = zip::ZipArchive::new(File::open(path)?).map_err(io::Error::other)?;
   let names = NameDecoder::for_zip(&mut zip);
   let mut damaged = Vec::new();
@@ -354,6 +357,12 @@ pub fn extract_zip(path: &Path, dir: &Path) -> io::Result<Vec<String>> {
       dirs.push((target, mode, time));
       continue;
     }
+    meter.item_done();
+    meter.item(
+      rel
+        .file_name()
+        .map_or(name.as_str(), |n| n.to_str().unwrap_or(&name)),
+    )?;
     if let Some(parent) = target.parent() {
       fs::create_dir_all(parent)?;
     }
@@ -370,7 +379,7 @@ pub fn extract_zip(path: &Path, dir: &Path) -> io::Result<Vec<String>> {
       Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
       r => r?,
     };
-    if !copy_member(&mut file, &mut out, &mut buf)? {
+    if !copy_member(&mut file, &mut out, &mut buf, meter)? {
       drop(out);
       fs::remove_file(&target)?;
       damaged.push(name);
@@ -464,8 +473,13 @@ fn enclosed(name: &str) -> Option<std::path::PathBuf> {
 }
 
 /// Copies a member's data to `out`. False when reading it fails (a bad checksum, data that
-/// does not decompress); writing errors are errors.
-fn copy_member(file: &mut impl Read, out: &mut File, buf: &mut [u8]) -> io::Result<bool> {
+/// does not decompress); writing errors are errors, and so is `meter` stopping.
+fn copy_member(
+  file: &mut impl Read,
+  out: &mut File,
+  buf: &mut [u8],
+  meter: &mut Meter,
+) -> io::Result<bool> {
   use std::io::Write;
   loop {
     let n = match file.read(buf) {
@@ -475,6 +489,21 @@ fn copy_member(file: &mut impl Read, out: &mut File, buf: &mut [u8]) -> io::Resu
       Err(_) => return Ok(false),
     };
     out.write_all(&buf[..n])?;
+    meter.add_bytes(n as u64)?;
+  }
+}
+
+/// Counts the bytes read through it with a [`Meter`], failing once the meter stops.
+struct Metered<'m, 'a, R> {
+  inner: R,
+  meter: &'m mut Meter<'a>,
+}
+
+impl<R: Read> Read for Metered<'_, '_, R> {
+  fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    let n = self.inner.read(buf)?;
+    self.meter.add_bytes(n as u64)?;
+    Ok(n)
   }
 }
 
@@ -517,27 +546,41 @@ fn local_time(t: &zip::DateTime) -> Option<SystemTime> {
 }
 
 /// Extracts a tar archive into the empty directory `dir`. Entries leading outside it are
-/// skipped; setuid and setgid bits are dropped.
-pub fn extract_tar(path: &Path, c: Compression, dir: &Path) -> io::Result<()> {
-  let mut archive = tar::Archive::new(decoder(File::open(path)?, c)?);
+/// skipped; setuid and setgid bits are dropped. `meter` counts the archive's bytes as they
+/// are read, compressed.
+pub fn extract_tar(path: &Path, c: Compression, dir: &Path, meter: &mut Meter) -> io::Result<()> {
+  let file = Metered {
+    inner: File::open(path)?,
+    meter,
+  };
+  let mut archive = tar::Archive::new(decoder(file, c)?);
   archive.set_preserve_permissions(false);
   archive.unpack(dir)
 }
 
 /// Decompresses a single compressed file to `target`, or, when it turns out to hold a tar
-/// archive, extracts that into `dir` (the directory `target` is in).
+/// archive, extracts that into `dir` (the directory `target` is in). `meter` counts the
+/// compressed bytes read.
 pub fn extract_compressed(
   path: &Path,
   c: Compression,
   dir: &Path,
   target: &Path,
+  meter: &mut Meter,
 ) -> io::Result<()> {
-  let mut reader = decoder(File::open(path)?, c)?;
+  let before = meter.progress.bytes_done;
+  let file = Metered {
+    inner: File::open(path)?,
+    meter: &mut *meter,
+  };
+  let mut reader = decoder(file, c)?;
   let mut block = Vec::with_capacity(512);
   (&mut reader).take(512).read_to_end(&mut block)?;
   if looks_like_tar(&block) {
     drop(reader);
-    return extract_tar(path, c, dir);
+    // Read again from the start.
+    meter.progress.bytes_done = before;
+    return extract_tar(path, c, dir, meter);
   }
   let mut out = File::create_new(target)?;
   io::copy(&mut io::Cursor::new(block).chain(reader), &mut out)?;

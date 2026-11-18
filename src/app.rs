@@ -10,7 +10,7 @@ use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
 
 use crate::action::Action;
@@ -18,9 +18,11 @@ use crate::clipboard;
 use crate::config::Config;
 use crate::console::{self, CompletionSource, ConsoleCommand, EditOutcome, LineEditor};
 use crate::event::Event;
+use crate::fs::ops::{Conflict, OnConflict, Resolution};
 use crate::fs::sort::sort_entries_by;
 use crate::fs::{DirCount, DirListing, Entry, PasteMode, SortKey};
 use crate::graphics::EncodedImage;
+use crate::jobs::{ConflictPrompt, JobId, JobKind, Jobs, PasteRequest, Progress};
 use crate::keymap::{Key, KeyResult, Keymap};
 use crate::nav::{Cursor, ScrollPos, passive_offset};
 use crate::preview::{Preview, PreviewLimits};
@@ -89,25 +91,32 @@ pub enum Command {
     from: PathBuf,
     to: PathBuf,
   },
-  /// Copy or move `sources` into the directory `dest`.
+  /// Copy or move `sources` into the directory `dest`, as task `job`.
   Paste {
+    job: JobId,
     sources: Vec<PathBuf>,
     dest: PathBuf,
     mode: PasteMode,
-    overwrite: bool,
+    on_conflict: OnConflict,
   },
   /// Delete these paths for good, or move them into the trash at `trash`.
   Delete {
+    job: JobId,
     paths: Vec<PathBuf>,
     trash: Option<PathBuf>,
   },
   /// Extract each of `archives` into the directory `dest`; with `skip_damaged`, without
   /// their damaged members.
   Extract {
+    job: JobId,
     archives: Vec<PathBuf>,
     dest: PathBuf,
     skip_damaged: bool,
   },
+  /// Stop a task, running or queued, undoing what it was halfway through.
+  CancelJob(JobId),
+  /// Pause (`true`) or resume a task.
+  PauseJob(JobId, bool),
   /// Create a directory (`dir`) or an empty file, with missing parents.
   Create {
     path: PathBuf,
@@ -334,6 +343,8 @@ pub struct App {
   marked: HashSet<PathBuf>,
   pub message: Option<Message>,
   pub preview: Option<PreviewSlot>,
+  /// Copies, moves, deletions and extractions, running or queued.
+  pub jobs: Jobs,
   dirs: HashMap<PathBuf, DirState>,
   counts: HashMap<PathBuf, DirCount>,
   cursor: Cursor,
@@ -399,6 +410,7 @@ impl App {
       marked: HashSet::new(),
       message: None,
       preview: None,
+      jobs: Jobs::default(),
       dirs: HashMap::new(),
       counts: HashMap::new(),
       cursor: Cursor::default(),
@@ -614,14 +626,40 @@ impl App {
       } => self.on_preview(id, path, result, image),
       Event::Counts(counts) => self.counts.extend(counts),
       Event::Renamed { from, to, result } => self.on_renamed(from, to, result),
+      Event::JobProgress { job, progress } => self.on_job_progress(job, progress),
+      Event::PasteConflicts { job, conflicts } => self.on_conflicts(job, conflicts),
       Event::Pasted {
+        job,
         dest,
         mode,
         results,
-      } => self.on_pasted(dest, mode, results),
-      Event::Deleted { trashed, results } => self.on_deleted(trashed, results),
+        stopped,
+      } => {
+        let finished = self.jobs.remove(job);
+        self.on_pasted(dest, mode, results, stopped);
+        self.job_finished(finished);
+      }
+      Event::Deleted {
+        job,
+        trashed,
+        results,
+        stopped,
+      } => {
+        let finished = self.jobs.remove(job);
+        self.on_deleted(trashed, results, stopped);
+        self.job_finished(finished);
+      }
       Event::Created { path, dir, result } => self.on_created(path, dir, result),
-      Event::Extracted { dest, results } => self.on_extracted(dest, results),
+      Event::Extracted {
+        job,
+        dest,
+        results,
+        stopped,
+      } => {
+        let finished = self.jobs.remove(job);
+        self.on_extracted(dest, results, stopped);
+        self.job_finished(finished);
+      }
       Event::Clipboard(result) => {
         if let Err(e) = result {
           self.set_error(e);
@@ -690,6 +728,11 @@ impl App {
       }
       return;
     }
+    if self.tasks_visible() {
+      self.keymap.reset();
+      self.tasks_key(key);
+      return;
+    }
     if let KeyResult::Action(action) = self.keymap.feed(key) {
       self.dispatch(action);
     }
@@ -717,7 +760,7 @@ impl App {
       }
       return;
     }
-    if self.console.is_some() {
+    if self.console.is_some() || self.tasks_visible() {
       return;
     }
     let inner = crate::ui::layout::body_inner(self.width, self.rows as u16);
@@ -1244,12 +1287,233 @@ impl App {
       PasteMode::Move => "moving",
     };
     self.set_info(format!("{verb} {}", items(buffer.paths.len())));
-    self.commands.push(Command::Paste {
+    let what = match buffer.paths.as_slice() {
+      [one] => display_name(one),
+      many => items(many.len()),
+    };
+    let job = self.jobs.add(
+      JobKind::from_paste(buffer.mode),
+      what,
+      Some(self.cwd.clone()),
+    );
+    let request = PasteRequest {
       sources: buffer.paths,
       dest: self.cwd.clone(),
       mode: buffer.mode,
-      overwrite,
+    };
+    if let Some(j) = self.jobs.get_mut(job) {
+      j.request = Some(request.clone());
+    }
+    let on_conflict = if overwrite {
+      OnConflict::Overwrite
+    } else {
+      OnConflict::Ask
+    };
+    self.push_paste(job, request, on_conflict);
+  }
+
+  fn push_paste(&mut self, job: JobId, request: PasteRequest, on_conflict: OnConflict) {
+    self.commands.push(Command::Paste {
+      job,
+      sources: request.sources,
+      dest: request.dest,
+      mode: request.mode,
+      on_conflict,
     });
+  }
+
+  /// A paste found names taken: its conflicts are asked about one by one in the task popup.
+  fn on_conflicts(&mut self, job: JobId, conflicts: Vec<Conflict>) {
+    let Some(j) = self.jobs.get_mut(job) else {
+      return;
+    };
+    j.started = None;
+    j.prompt = Some(ConflictPrompt {
+      conflicts,
+      answers: Vec::new(),
+      apply_all: false,
+    });
+    self.jobs.hidden = false;
+    self.keymap.reset();
+  }
+
+  /// Answers the conflict on screen. Once every conflict of the paste is answered, the paste
+  /// is queued again with the answers.
+  fn answer_conflict(&mut self, job: JobId, resolution: Resolution) {
+    let Some(j) = self.jobs.get_mut(job) else {
+      return;
+    };
+    let Some(prompt) = &mut j.prompt else {
+      return;
+    };
+    if !prompt.answer(resolution) {
+      return;
+    }
+    let answers = std::mem::take(&mut prompt.answers);
+    j.prompt = None;
+    j.created = Instant::now();
+    if let Some(request) = j.request.clone() {
+      self.push_paste(job, request, OnConflict::Answered(answers));
+    }
+  }
+
+  fn on_job_progress(&mut self, job: JobId, progress: Progress) {
+    if let Some(j) = self.jobs.get_mut(job) {
+      j.update(progress, Instant::now());
+    }
+  }
+
+  /// Whether the task popup is up, and takes the keys.
+  pub fn tasks_visible(&self) -> bool {
+    self.console.is_none()
+      && !self.show_help
+      && self.confirm.is_none()
+      && !self.jobs.list.is_empty()
+      && self.jobs.popup_wanted()
+  }
+
+  /// `w`: brings the task popup back.
+  fn show_tasks(&mut self) {
+    if self.jobs.list.is_empty() {
+      self.set_info("no tasks");
+      return;
+    }
+    self.jobs.hidden = false;
+    self.jobs.forced = true;
+  }
+
+  /// Keys while the task popup is up. It is modal: other keys do nothing.
+  fn tasks_key(&mut self, key: Key) {
+    if key
+      .mods
+      .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+      return;
+    }
+    if let Some(job) = self.jobs.prompting() {
+      // Copied into its own directory, it can only be skipped or renamed.
+      let itself = job
+        .prompt
+        .as_ref()
+        .and_then(|p| p.current())
+        .is_some_and(|c| c.itself);
+      let job = job.id;
+      match key.code {
+        KeyCode::Char('o') if !itself => self.answer_conflict(job, Resolution::Overwrite),
+        KeyCode::Char('s') => self.answer_conflict(job, Resolution::Skip),
+        KeyCode::Char('n') if !itself => self.answer_conflict(job, Resolution::KeepNewer),
+        KeyCode::Char('r') => self.answer_conflict(job, Resolution::Rename),
+        KeyCode::Char('a') => {
+          if let Some(prompt) = self.jobs.get_mut(job).and_then(|j| j.prompt.as_mut()) {
+            prompt.apply_all = !prompt.apply_all;
+          }
+        }
+        KeyCode::Char('X') => {
+          // It is not on the worker while it waits: dropping it is all there is to do.
+          if let Some(j) = self.jobs.remove(job) {
+            self.set_info(format!(
+              "cancelled {} of {}",
+              j.kind.name().to_lowercase(),
+              j.what
+            ));
+          }
+        }
+        KeyCode::Esc => self.hide_tasks(),
+        _ => {}
+      }
+      return;
+    }
+    let last = self.jobs.list.len().saturating_sub(1);
+    match key.code {
+      KeyCode::Esc | KeyCode::Char('b') => self.hide_tasks(),
+      KeyCode::Char('j') | KeyCode::Down => {
+        self.jobs.selected = (self.jobs.selected + 1).min(last);
+      }
+      KeyCode::Char('k') | KeyCode::Up => {
+        self.jobs.selected = self.jobs.selected.saturating_sub(1);
+      }
+      KeyCode::Char('p') => {
+        if let Some(j) = self.jobs.list.get_mut(self.jobs.selected)
+          && !j.cancelled
+        {
+          let paused = !j.paused;
+          j.set_paused(paused);
+          let id = j.id;
+          self.commands.push(Command::PauseJob(id, paused));
+        }
+      }
+      KeyCode::Char('x') => {
+        if let Some(j) = self.jobs.list.get_mut(self.jobs.selected)
+          && !j.cancelled
+        {
+          j.cancelled = true;
+          let id = j.id;
+          self.commands.push(Command::CancelJob(id));
+        }
+      }
+      _ => {}
+    }
+  }
+
+  /// Sends the tasks to the background; the status bar shows them.
+  fn hide_tasks(&mut self) {
+    self.jobs.hidden = true;
+    self.jobs.forced = false;
+  }
+
+  /// A toast for a task that ran long enough to be shown; quick ones only leave the status
+  /// message.
+  fn job_finished(&mut self, job: Option<crate::jobs::Job>) {
+    let Some(job) = job else {
+      return;
+    };
+    // Nothing to celebrate while damaged archives wait for an answer.
+    if job.cancelled || job.created.elapsed() < crate::jobs::SHOW_AFTER || self.confirm.is_some() {
+      return;
+    }
+    let what = match &job.dest {
+      Some(dest) if job.kind != JobKind::Delete && job.kind != JobKind::Trash => {
+        format!("{} → {}", job.what, self.short_path(dest))
+      }
+      _ => job.what.clone(),
+    };
+    let failed = self
+      .message
+      .as_ref()
+      .filter(|m| m.level == MessageLevel::Error)
+      .map(|m| m.text.clone());
+    match failed {
+      Some(reason) => {
+        let title = format!("{} failed", job.kind.name());
+        self.jobs.toast(false, title, what, reason);
+      }
+      None => {
+        let took = job
+          .started
+          .map(|t| crate::jobs::format_duration(t.elapsed()))
+          .unwrap_or_default();
+        let bytes = job.progress.bytes_done;
+        let detail = if bytes > 0 {
+          let size = crate::fs::meta::human_size(bytes, self.config.binary_size_prefix);
+          format!("{size} in {took}")
+        } else {
+          format!("in {took}")
+        };
+        self
+          .jobs
+          .toast(true, job.kind.past().to_string(), what, detail);
+      }
+    }
+  }
+
+  /// `path` with the home directory as `~`, safe to draw.
+  pub fn short_path(&self, path: &Path) -> String {
+    let shown = match self.home.as_deref().and_then(|h| path.strip_prefix(h).ok()) {
+      Some(rel) if rel.as_os_str().is_empty() => "~".to_string(),
+      Some(rel) => format!("~/{}", rel.display()),
+      None => path.display().to_string(),
+    };
+    crate::fs::entry::sanitize(&shown)
   }
 
   /// `dD` / `dT`: asks to delete (or trash) the marked entries, or the selection. Nothing
@@ -1286,11 +1550,7 @@ impl App {
       ConfirmAction::Delete { trash, paths } => self.run_delete(trash, paths),
       ConfirmAction::ExtractDamaged { archives, dest, .. } => {
         self.set_info(format!("extracting the rest of {}", items(archives.len())));
-        self.commands.push(Command::Extract {
-          archives,
-          dest,
-          skip_damaged: true,
-        });
+        self.push_extract(archives, dest, true);
       }
     }
   }
@@ -1310,10 +1570,44 @@ impl App {
     };
     let verb = if to_trash { "trashing" } else { "deleting" };
     self.set_info(format!("{verb} {}", items(paths.len())));
-    self.commands.push(Command::Delete { paths, trash });
+    let kind = if to_trash {
+      JobKind::Trash
+    } else {
+      JobKind::Delete
+    };
+    let what = match paths.as_slice() {
+      [one] => display_name(one),
+      many => items(many.len()),
+    };
+    let job = self.jobs.add(kind, what, None);
+    self.commands.push(Command::Delete { job, paths, trash });
   }
 
-  fn on_deleted(&mut self, trashed: bool, results: Vec<(PathBuf, Result<(), String>)>) {
+  fn push_extract(&mut self, archives: Vec<PathBuf>, dest: PathBuf, skip_damaged: bool) {
+    let what = match archives.as_slice() {
+      [one] => display_name(one),
+      many => items(many.len()),
+    };
+    let job = self.jobs.add(JobKind::Extract, what, Some(dest.clone()));
+    self.commands.push(Command::Extract {
+      job,
+      archives,
+      dest,
+      skip_damaged,
+    });
+  }
+
+  /// `cancelled, copied 2 items`, for a task stopped before it finished.
+  fn report_stopped(&mut self, past: &str, done: usize) {
+    self.set_info(format!("cancelled, {past} {}", items(done)));
+  }
+
+  fn on_deleted(
+    &mut self,
+    trashed: bool,
+    results: Vec<(PathBuf, Result<(), String>)>,
+    stopped: bool,
+  ) {
     let mut done = 0;
     let mut errors = Vec::new();
     let mut refresh = Vec::new();
@@ -1340,6 +1634,7 @@ impl App {
     }
     let verb = if trashed { "trashed" } else { "deleted" };
     match errors.as_slice() {
+      [] if stopped => self.report_stopped(verb, done),
       [] => self.set_info(format!("{verb} {}", items(done))),
       [first, rest @ ..] => {
         let more = if rest.is_empty() {
@@ -1438,11 +1733,7 @@ impl App {
     };
     let archives = archives.into_iter().map(|(_, path)| path).collect();
     self.set_info(format!("extracting {what}{note}"));
-    self.commands.push(Command::Extract {
-      archives,
-      dest: self.cwd.clone(),
-      skip_damaged: false,
-    });
+    self.push_extract(archives, self.cwd.clone(), false);
   }
 
   /// Reports extractions. Archives with damaged members were not extracted; they lead to
@@ -1454,6 +1745,7 @@ impl App {
       PathBuf,
       Result<crate::archive::Extracted, crate::archive::ExtractError>,
     )>,
+    stopped: bool,
   ) {
     use crate::archive::ExtractError;
     let mut done = Vec::new();
@@ -1489,6 +1781,7 @@ impl App {
         };
         self.set_error(format!("{first}{more}"));
       }
+      ([], done) if stopped => self.report_stopped("extracted", done.len()),
       ([], []) => {}
       ([], [(archive, target)]) => {
         let mut to = display_name(target);
@@ -1547,14 +1840,20 @@ impl App {
     &mut self,
     dest: PathBuf,
     mode: PasteMode,
-    results: Vec<(PathBuf, Result<PathBuf, String>)>,
+    results: Vec<(PathBuf, Result<Option<PathBuf>, String>)>,
+    stopped: bool,
   ) {
     let mut refresh = vec![dest.clone()];
     let mut pasted = Vec::new();
     let mut errors = Vec::new();
+    let mut skipped = 0;
     for (src, result) in results {
       let target = match result {
-        Ok(target) => target,
+        Ok(Some(target)) => target,
+        Ok(None) => {
+          skipped += 1;
+          continue;
+        }
         Err(e) => {
           errors.push(e);
           continue;
@@ -1603,7 +1902,17 @@ impl App {
           .unwrap_or_default(),
         many => items(many.len()),
       };
-      self.set_info(format!("{verb} {what}"));
+      let note = match skipped {
+        0 => String::new(),
+        n => format!(", skipped {n}"),
+      };
+      if stopped {
+        self.report_stopped(verb, pasted.len());
+      } else if pasted.is_empty() {
+        self.set_info(format!("skipped {}", items(skipped)));
+      } else {
+        self.set_info(format!("{verb} {what}{note}"));
+      }
     }
     if let Some(name) = pasted.first().and_then(|t| t.file_name()) {
       let name = crate::fs::entry::sanitize(&name.to_string_lossy());
@@ -1698,6 +2007,7 @@ impl App {
   }
 
   pub fn tick(&mut self) {
+    self.jobs.expire_toasts();
     if let Some(m) = &self.message
       && m.level == MessageLevel::Info
       && m.at.elapsed() >= INFO_TIMEOUT
@@ -1773,6 +2083,7 @@ impl App {
       Action::MakeDir => self.prompt(console::MKDIR),
       Action::Touch => self.prompt(console::TOUCH),
       Action::Extract => self.extract(),
+      Action::Tasks => self.show_tasks(),
       Action::ClearBuffer => {
         self.buffer = None;
         self.set_info("buffer cleared");

@@ -193,13 +193,14 @@ cargo test
 | `r`                         | Rename the selection          |
 | `yy`                        | Copy the marked or selected   |
 | `dd`                        | Cut the marked or selected    |
-| `pp`                        | Paste, never overwriting      |
+| `pp`                        | Paste, asking about conflicts |
 | `po`                        | Paste, overwriting            |
 | `dD`                        | Delete permanently (asks)     |
 | `dT`                        | Move to the trash (asks)      |
 | `md`                        | Create a directory (`:mkdir`) |
 | `mf`                        | Create a file (`:touch`)      |
 | `x`                         | Extract the archive here      |
+| `w`                         | Show the running tasks        |
 | `uy`, `ud`                  | Clear the copy/cut buffer     |
 | `yp`                        | Yank the selection's path     |
 | `yd`                        | Yank the current directory    |
@@ -267,17 +268,56 @@ into the current directory. A cut followed by a paste is a move. The buffer surv
 directory changes. After a copy it can be pasted again; after a cut it is emptied once the
 move succeeds. `uy` or `ud` clears it.
 
-`pp` never overwrites. As in ranger, a name that is taken gets a suffix: `name_`, then
-`name_0`, `name_1`, and so on. Copying an entry into its own directory therefore makes a
-suffixed duplicate, and moving it there does nothing. `po` overwrites instead: files are
-replaced, and a directory is merged into an existing directory of the same name. A file never
-replaces a directory.
+`pp` never overwrites without asking. When names are taken in the destination, nothing is
+pasted until each conflict is answered in a popup that shows both entries' sizes and dates:
+
+| Key   | Answer                                                                   |
+|-------|--------------------------------------------------------------------------|
+| `o`   | Overwrite (a directory is merged into)                                   |
+| `s`   | Skip this entry                                                          |
+| `n`   | Keep whichever is newer: overwrite if the incoming entry is newer        |
+| `r`   | Rename: as in ranger, a suffix `name_`, then `name_0`, `name_1`, ...     |
+| `a`   | Toggle applying the next answer to all remaining conflicts               |
+| `X`   | Cancel the paste                                                         |
+| `Esc` | Decide later: the status bar shows the paste waiting, `w` brings it back |
+
+Copying an entry into its own directory asks too, offering only `s` and `r` (a suffixed
+duplicate); moving it there does nothing. `po` overwrites without asking: files are
+replaced, and a directory is merged into an existing directory of the same name. A file
+never replaces a directory.
 
 Directories are copied recursively. Symlinks are copied as links, and permissions and
 modification times are kept. Fifos, sockets and device files are refused. Moves use `rename`
 and fall back to copy-and-delete across filesystems. A directory cannot be pasted into
-itself or its own subdirectories. Pastes run in the background, one at a time, and the
-pasted entry is selected when done.
+itself or its own subdirectories. The pasted entry is selected when done.
+
+## Tasks
+
+Pastes, deletions and extractions run in the background as tasks, one at a time; later
+ones queue. A task still running after a moment opens a popup with its progress: the
+current file, files and bytes done, speed and time left. With several tasks the popup lists
+them all.
+
+| Key        | In the task popup                                          |
+|------------|------------------------------------------------------------|
+| `b`, `Esc` | Send to the background                                     |
+| `p`        | Pause or resume the selected task                          |
+| `x`        | Cancel the selected task                                   |
+| `j`, `k`   | Select a task (several tasks)                              |
+
+In the background, the status bar shows the running task's progress and how many more
+there are; `w` opens the popup again. A finished task that was shown leaves a note in the
+bottom right corner for a few seconds (longer for a failure).
+
+Cancelling stops a task within a moment, and entries already done stay. Each file is copied
+under a hidden name and renamed into place when complete, so a file being copied or
+overwritten is either the old one or the new one, never half of each. A directory that a
+copy created is removed when cancelled; a merge into an existing directory stops where it
+is. A cancelled extraction leaves nothing behind. Deleting stops between entries.
+
+A paused copy or extraction waits within a few MiB, a deletion before its next entry. An
+archive unpacked by an external program is finished first. Quitting tansu stops running
+tasks without that cleanup.
 
 ## Deleting and creating
 
@@ -569,6 +609,10 @@ status_fg = "#d5c4a1"
 status_perms = "#8ec07c"
 status_perms_other = "#d3869b"
 error = "#fb4934"
+progress = "#fabd2f"       # task progress bars
+progress_track = "#3c3836" # the empty part of a progress bar
+success = "#b8bb26"        # finished tasks
+warning = "#fe8019"        # paste conflicts
 help_key = "#fabd2f"
 help_group = "#fb4934"
 vcs_sync = "#b8bb26"
@@ -622,6 +666,7 @@ with events.
 | `event.rs`    | Event enum and pausable input thread                               |
 | `runtime.rs`  | Executes commands on background threads                            |
 | `worker.rs`   | Latest-wins worker with cooperative cancellation                   |
+| `jobs.rs`     | Tasks: progress, pause and cancel, the task popup's model          |
 | `nav.rs`      | Cursor and scroll offset math                                      |
 | `opener.rs`   | Detached and foreground program launching                          |
 | `console.rs`  | Command-line editor and command parser                             |
@@ -632,7 +677,7 @@ with events.
 | `preview/`    | `Previewer` trait, registry, previewers, ANSI, thumbnail cache     |
 | `graphics.rs` | Encodes images for the terminal graphics protocol                  |
 | `vcs/`        | Git status via the `git` CLI, per-path and per-directory status    |
-| `ui/`         | Layout, columns, header, status bar, help overlay, icons           |
+| `ui/`         | Layout, columns, header, status bar, help, task popup, icons       |
 
 Responsiveness: directory listings run on their own threads; previews and item counts run
 on latest-wins workers, so moving the cursor cancels stale work. Git status runs on its own

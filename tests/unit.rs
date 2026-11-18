@@ -1422,3 +1422,170 @@ mod encodings {
     );
   }
 }
+
+// ---- tasks ----
+
+/// A meter that lets `allowed` checks pass, then stops the task.
+fn stopping_after(allowed: usize) -> impl Fn() -> bool {
+  let checks = std::cell::Cell::new(0);
+  move || {
+    checks.set(checks.get() + 1);
+    checks.get() > allowed
+  }
+}
+
+#[test]
+fn a_stopped_copy_leaves_nothing_behind() {
+  use tansu::fs::PasteMode;
+  use tansu::fs::ops::{Resolution, paste_with};
+  use tansu::jobs::Meter;
+  let tmp = tempfile::tempdir().unwrap();
+  let src = tmp.path().join("src");
+  std::fs::create_dir_all(src.join("sub")).unwrap();
+  for name in ["a", "b", "sub/c"] {
+    std::fs::write(src.join(name), vec![b'x'; 1024]).unwrap();
+  }
+  let dest = tmp.path().join("dest");
+  std::fs::create_dir(&dest).unwrap();
+  let stop = stopping_after(4);
+  let mut report = |_: &tansu::jobs::Progress| {};
+  let mut meter = Meter::new(&stop, &mut report);
+  let result = paste_with(&src, &dest, PasteMode::Copy, Resolution::Rename, &mut meter);
+  assert!(result.is_err());
+  assert!(meter.stopped());
+  assert!(!dest.join("src").exists(), "the partial copy is removed");
+  assert!(src.join("sub/c").exists(), "the source is untouched");
+}
+
+#[test]
+fn a_copy_counts_files_and_bytes() {
+  use tansu::fs::PasteMode;
+  use tansu::fs::ops::{Resolution, paste_totals, paste_with};
+  use tansu::jobs::Meter;
+  let tmp = tempfile::tempdir().unwrap();
+  let src = tmp.path().join("src");
+  std::fs::create_dir(&src).unwrap();
+  std::fs::write(src.join("a"), vec![b'x'; 300]).unwrap();
+  std::fs::write(src.join("b"), vec![b'y'; 700]).unwrap();
+  std::os::unix::fs::symlink("a", src.join("link")).unwrap();
+  let dest = tmp.path().join("dest");
+  std::fs::create_dir(&dest).unwrap();
+  let mut meter = Meter::silent();
+  assert_eq!(
+    paste_totals(&src, &dest, PasteMode::Copy, &mut meter),
+    (3, 1000)
+  );
+  paste_with(&src, &dest, PasteMode::Copy, Resolution::Rename, &mut meter).unwrap();
+  assert_eq!(meter.progress.files_done, 3);
+  assert_eq!(meter.progress.bytes_done, 1000);
+  assert_eq!(std::fs::read(dest.join("src/b")).unwrap(), vec![b'y'; 700]);
+}
+
+#[test]
+fn a_paused_task_waits_until_resumed_or_cancelled() {
+  use std::sync::Arc;
+  use std::time::Duration;
+  use tansu::jobs::Control;
+  let control = Arc::new(Control::default());
+  control.set_paused(true);
+  let waiting = Arc::clone(&control);
+  let worker = std::thread::spawn(move || waiting.checkpoint());
+  std::thread::sleep(Duration::from_millis(50));
+  assert!(!worker.is_finished());
+  control.set_paused(false);
+  assert!(!worker.join().unwrap(), "resumed, not cancelled");
+
+  control.set_paused(true);
+  let waiting = Arc::clone(&control);
+  let worker = std::thread::spawn(move || waiting.checkpoint());
+  control.cancel();
+  assert!(worker.join().unwrap());
+}
+
+#[test]
+fn conflict_answers_apply_to_the_rest_when_asked() {
+  use std::path::PathBuf;
+  use tansu::fs::ops::{Conflict, Resolution, Stat};
+  use tansu::jobs::ConflictPrompt;
+  let stat = Stat {
+    dir: false,
+    size: 1,
+    mtime: 0,
+  };
+  let conflict = |name: &str| Conflict {
+    source: PathBuf::from(name),
+    name: name.to_string(),
+    incoming: stat,
+    existing: stat,
+    renamed: format!("{name}_"),
+    itself: false,
+  };
+  let mut prompt = ConflictPrompt {
+    conflicts: vec![conflict("a"), conflict("b"), conflict("c")],
+    answers: Vec::new(),
+    apply_all: false,
+  };
+  assert!(!prompt.answer(Resolution::Skip));
+  assert_eq!(prompt.current().unwrap().name, "b");
+  assert_eq!(prompt.remaining(), 1);
+  prompt.apply_all = true;
+  assert!(prompt.answer(Resolution::Overwrite));
+  assert_eq!(
+    prompt.answers,
+    vec![
+      (PathBuf::from("a"), Resolution::Skip),
+      (PathBuf::from("b"), Resolution::Overwrite),
+      (PathBuf::from("c"), Resolution::Overwrite),
+    ]
+  );
+}
+
+#[test]
+fn a_stopped_overwrite_keeps_the_file_it_would_replace() {
+  use tansu::fs::PasteMode;
+  use tansu::fs::ops::{Resolution, paste_with};
+  use tansu::jobs::Meter;
+  let tmp = tempfile::tempdir().unwrap();
+  let src = tmp.path().join("big.bin");
+  std::fs::write(&src, vec![b'n'; 6 * 1024 * 1024]).unwrap();
+  let dest = tmp.path().join("dest");
+  std::fs::create_dir(&dest).unwrap();
+  std::fs::write(dest.join("big.bin"), "old").unwrap();
+  // Stops after the first chunk is written.
+  let stop = stopping_after(3);
+  let mut report = |_: &tansu::jobs::Progress| {};
+  let mut meter = Meter::new(&stop, &mut report);
+  let result = paste_with(
+    &src,
+    &dest,
+    PasteMode::Copy,
+    Resolution::Overwrite,
+    &mut meter,
+  );
+  assert!(result.is_err());
+  assert!(meter.stopped());
+  assert!(meter.progress.bytes_done > 0, "it was stopped partway");
+  assert_eq!(
+    std::fs::read_to_string(dest.join("big.bin")).unwrap(),
+    "old"
+  );
+  let left: Vec<_> = std::fs::read_dir(&dest)
+    .unwrap()
+    .map(|e| e.unwrap().file_name())
+    .collect();
+  assert_eq!(left, ["big.bin"], "no partial copy is left");
+
+  // Unstopped, it replaces the file.
+  paste_with(
+    &src,
+    &dest,
+    PasteMode::Copy,
+    Resolution::Overwrite,
+    &mut Meter::silent(),
+  )
+  .unwrap();
+  assert_eq!(
+    std::fs::metadata(dest.join("big.bin")).unwrap().len(),
+    6 * 1024 * 1024
+  );
+}

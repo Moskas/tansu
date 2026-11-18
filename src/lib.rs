@@ -9,6 +9,7 @@ pub mod console;
 pub mod event;
 pub mod fs;
 pub mod graphics;
+pub mod jobs;
 pub mod keymap;
 pub mod nav;
 pub mod opener;

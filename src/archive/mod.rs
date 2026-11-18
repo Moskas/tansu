@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 pub use builtin::MAX_SCAN;
-pub use extract::{ExtractError, Extracted, extract};
+pub use extract::{ExtractError, Extracted, extract, extract_totals, extract_with};
 
 use external::Tool;
 

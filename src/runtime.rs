@@ -11,8 +11,10 @@ use std::time::{Duration, Instant};
 use crate::app::Command;
 use crate::clipboard::{self, Backend};
 use crate::event::Event;
+use crate::fs::ops::OnConflict;
 use crate::fs::{DirCount, Entry, PasteMode, count_entries, list_dir, ops};
 use crate::graphics::ImageEncoder;
+use crate::jobs::{Control, JobId, Meter, Progress};
 use crate::preview::{Preview, PreviewContext, PreviewError, PreviewLimits, PreviewRegistry};
 use crate::shell::ShellMode;
 use crate::vcs::{self, DirVcs, GitError, RepoStatus, VcsRequest};
@@ -115,47 +117,118 @@ pub fn rename(from: &Path, to: &Path) -> Event {
   }
 }
 
-/// Pastes each of `sources` into `dest`, carrying on past failures.
-pub fn paste(sources: &[PathBuf], dest: &Path, mode: PasteMode, overwrite: bool) -> Event {
-  let results = sources
-    .iter()
-    .map(|src| (src.clone(), ops::paste(src, dest, mode, overwrite)))
-    .collect();
+/// Pastes each of `sources` into `dest`, carrying on past failures and counting with
+/// `meter`. With [`OnConflict::Ask`], conflicts are looked for first; when there are any,
+/// they are reported and nothing is pasted.
+pub fn paste(
+  job: JobId,
+  sources: &[PathBuf],
+  dest: &Path,
+  mode: PasteMode,
+  on_conflict: &OnConflict,
+  meter: &mut Meter,
+) -> Event {
+  let mut results = Vec::new();
+  if meter.check().is_ok() {
+    if *on_conflict == OnConflict::Ask {
+      let conflicts: Vec<_> = sources
+        .iter()
+        .filter_map(|s| ops::probe(s, dest, mode))
+        .collect();
+      if !conflicts.is_empty() {
+        return Event::PasteConflicts { job, conflicts };
+      }
+    }
+    // Started: counting a large tree takes a while, and it should not look queued.
+    meter.progress.current = "counting…".to_string();
+    meter.report();
+    let (mut files, mut bytes) = (0, 0);
+    for src in sources {
+      let (f, b) = ops::paste_totals(src, dest, mode, meter);
+      files += f;
+      bytes += b;
+    }
+    meter.progress.files_total = Some(files);
+    meter.progress.bytes_total = Some(bytes);
+    meter.report();
+    for src in sources {
+      let result = ops::paste_with(src, dest, mode, on_conflict.for_source(src), meter);
+      // What was stopped halfway was undone: it is left out like the rest.
+      if meter.stopped() {
+        break;
+      }
+      results.push((src.clone(), result));
+    }
+  }
   Event::Pasted {
+    job,
     dest: dest.to_path_buf(),
     mode,
     results,
+    stopped: meter.stopped(),
   }
 }
 
 /// Deletes each of `paths`, or moves it into the trash at `trash`, carrying on past failures.
-pub fn delete(paths: &[PathBuf], trash: Option<&Path>) -> Event {
-  let results = paths
-    .iter()
-    .map(|path| {
-      let result = match trash {
-        Some(root) => crate::fs::trash::trash(path, root).map(drop),
-        None => ops::remove(path),
-      };
-      (path.clone(), result)
-    })
-    .collect();
+/// `meter` counts them, and can stop between them.
+pub fn delete(job: JobId, paths: &[PathBuf], trash: Option<&Path>, meter: &mut Meter) -> Event {
+  meter.progress.files_total = Some(paths.len() as u64);
+  meter.report();
+  let mut results = Vec::new();
+  for path in paths {
+    let name = path.file_name().unwrap_or(path.as_os_str());
+    if meter.item(&name.to_string_lossy()).is_err() {
+      break;
+    }
+    let result = match trash {
+      Some(root) => crate::fs::trash::trash(path, root).map(drop),
+      None => ops::remove(path),
+    };
+    meter.item_done();
+    results.push((path.clone(), result));
+  }
   Event::Deleted {
+    job,
     trashed: trash.is_some(),
     results,
+    stopped: meter.stopped(),
   }
 }
 
-/// Extracts each of `archives` into `dest`, carrying on past failures. With `skip_damaged`,
-/// damaged members are left out instead of failing their archive.
-pub fn extract(archives: &[PathBuf], dest: &Path, skip_damaged: bool) -> Event {
-  let results = archives
-    .iter()
-    .map(|a| (a.clone(), crate::archive::extract(a, dest, skip_damaged)))
-    .collect();
+/// Extracts each of `archives` into `dest`, carrying on past failures and counting with
+/// `meter`. With `skip_damaged`, damaged members are left out instead of failing their
+/// archive.
+pub fn extract(
+  job: JobId,
+  archives: &[PathBuf],
+  dest: &Path,
+  skip_damaged: bool,
+  meter: &mut Meter,
+) -> Event {
+  meter.report();
+  let mut files = Some(0);
+  let mut bytes = 0;
+  for archive in archives {
+    let (f, b) = crate::archive::extract_totals(archive);
+    files = files.zip(f).map(|(a, b)| a + b);
+    bytes += b;
+  }
+  meter.progress.files_total = files;
+  meter.progress.bytes_total = Some(bytes);
+  meter.report();
+  let mut results = Vec::new();
+  for archive in archives {
+    let result = crate::archive::extract_with(archive, dest, skip_damaged, meter);
+    if meter.stopped() {
+      break;
+    }
+    results.push((archive.clone(), result));
+  }
   Event::Extracted {
+    job,
     dest: dest.to_path_buf(),
     results,
+    stopped: meter.stopped(),
   }
 }
 
@@ -168,33 +241,106 @@ pub fn create(path: &Path, dir: bool) -> Event {
   }
 }
 
-/// A paste request: sources, destination directory, mode and whether to overwrite.
-type PasteJob = (Vec<PathBuf>, PathBuf, PasteMode, bool);
-
 /// Work for the file operation thread.
 enum FileJob {
-  Paste(PasteJob),
+  Paste {
+    sources: Vec<PathBuf>,
+    dest: PathBuf,
+    mode: PasteMode,
+    on_conflict: OnConflict,
+  },
   /// Paths to delete, and the trash to move them into instead.
-  Delete(Vec<PathBuf>, Option<PathBuf>),
-  /// Archives to extract, and the directory to extract them into.
-  Extract(Vec<PathBuf>, PathBuf, bool),
+  Delete {
+    paths: Vec<PathBuf>,
+    trash: Option<PathBuf>,
+  },
+  Extract {
+    archives: Vec<PathBuf>,
+    dest: PathBuf,
+    skip_damaged: bool,
+  },
 }
 
-/// Starts the thread that runs pastes and deletions one after another, so they never race
-/// for the same names and a large copy or delete does not hold up the UI.
-fn spawn_file_worker(tx: Sender<Event>) -> Sender<FileJob> {
-  let (job_tx, job_rx) = mpsc::channel::<FileJob>();
+/// A task for the file operation thread, and what pauses or cancels it.
+struct FileTask {
+  job: JobId,
+  control: Arc<Control>,
+  work: FileJob,
+}
+
+/// Runs a task, counting with `meter`.
+fn run_file_job(job: JobId, work: FileJob, meter: &mut Meter) -> Event {
+  match work {
+    FileJob::Paste {
+      sources,
+      dest,
+      mode,
+      on_conflict,
+    } => paste(job, &sources, &dest, mode, &on_conflict, meter),
+    FileJob::Delete { paths, trash } => delete(job, &paths, trash.as_deref(), meter),
+    FileJob::Extract {
+      archives,
+      dest,
+      skip_damaged,
+    } => extract(job, &archives, &dest, skip_damaged, meter),
+  }
+}
+
+/// The task a command starts on the file operation thread, if it is one.
+fn file_job(cmd: Command) -> Result<(JobId, FileJob), Box<Command>> {
+  Ok(match cmd {
+    Command::Paste {
+      job,
+      sources,
+      dest,
+      mode,
+      on_conflict,
+    } => (
+      job,
+      FileJob::Paste {
+        sources,
+        dest,
+        mode,
+        on_conflict,
+      },
+    ),
+    Command::Delete { job, paths, trash } => (job, FileJob::Delete { paths, trash }),
+    Command::Extract {
+      job,
+      archives,
+      dest,
+      skip_damaged,
+    } => (
+      job,
+      FileJob::Extract {
+        archives,
+        dest,
+        skip_damaged,
+      },
+    ),
+    cmd => return Err(Box::new(cmd)),
+  })
+}
+
+/// Starts the thread that runs pastes, deletions and extractions one after another, so they
+/// never race for the same names and a large copy or delete does not hold up the UI. Each
+/// reports its progress as it goes.
+fn spawn_file_worker(tx: Sender<Event>) -> Sender<FileTask> {
+  let (job_tx, job_rx) = mpsc::channel::<FileTask>();
   let spawned = thread::Builder::new()
     .name("file-ops".into())
     .spawn(move || {
-      while let Ok(job) = job_rx.recv() {
-        let ev = match job {
-          FileJob::Paste((sources, dest, mode, overwrite)) => {
-            paste(&sources, &dest, mode, overwrite)
-          }
-          FileJob::Delete(paths, trash) => delete(&paths, trash.as_deref()),
-          FileJob::Extract(archives, dest, skip) => extract(&archives, &dest, skip),
+      while let Ok(FileTask { job, control, work }) = job_rx.recv() {
+        let stop = || control.checkpoint();
+        let progress_tx = tx.clone();
+        let mut report = |p: &Progress| {
+          let _ = progress_tx.send(Event::JobProgress {
+            job,
+            progress: p.clone(),
+          });
         };
+        let mut meter = Meter::new(&stop, &mut report);
+        let ev = run_file_job(job, work, &mut meter);
         if tx.send(ev).is_err() {
           return;
         }
@@ -379,7 +525,9 @@ pub struct Runtime {
   counts: LatestWorker<Vec<PathBuf>>,
   vcs: Sender<VcsRequest>,
   zoxide_add: Sender<PathBuf>,
-  files: Sender<FileJob>,
+  files: Sender<FileTask>,
+  /// What pauses and cancels each task given to the file thread and not finished yet.
+  controls: HashMap<JobId, Arc<Control>>,
   opener: String,
 }
 
@@ -419,13 +567,40 @@ impl Runtime {
       vcs,
       zoxide_add,
       files,
+      controls: HashMap::new(),
       opener,
     }
   }
 
+  /// Queues a task on the file thread.
+  fn submit(&mut self, job: JobId, work: FileJob) {
+    // The worker holds the other reference until the task is done.
+    self.controls.retain(|_, c| Arc::strong_count(c) > 1);
+    let control = Arc::new(Control::default());
+    self.controls.insert(job, Arc::clone(&control));
+    let _ = self.files.send(FileTask { job, control, work });
+  }
+
   /// Starts a command. Returns an error message for failures that happen synchronously.
   pub fn execute(&mut self, cmd: Command) -> Option<String> {
+    let cmd = match file_job(cmd) {
+      Ok((job, work)) => {
+        self.submit(job, work);
+        return None;
+      }
+      Err(cmd) => *cmd,
+    };
     match cmd {
+      Command::CancelJob(job) => {
+        if let Some(control) = self.controls.get(&job) {
+          control.cancel();
+        }
+      }
+      Command::PauseJob(job, paused) => {
+        if let Some(control) = self.controls.get(&job) {
+          control.set_paused(paused);
+        }
+      }
       Command::LoadDir(path) => {
         let tx = self.tx.clone();
         let spawned = thread::Builder::new().name("list".into()).spawn(move || {
@@ -510,28 +685,8 @@ impl Runtime {
       Command::Rename { from, to } => {
         let _ = self.tx.send(rename(&from, &to));
       }
-      Command::Paste {
-        sources,
-        dest,
-        mode,
-        overwrite,
-      } => {
-        let _ = self
-          .files
-          .send(FileJob::Paste((sources, dest, mode, overwrite)));
-      }
-      Command::Delete { paths, trash } => {
-        let _ = self.files.send(FileJob::Delete(paths, trash));
-      }
-      Command::Extract {
-        archives,
-        dest,
-        skip_damaged,
-      } => {
-        let _ = self
-          .files
-          .send(FileJob::Extract(archives, dest, skip_damaged));
-      }
+      // Taken by `file_job` above.
+      Command::Paste { .. } | Command::Delete { .. } | Command::Extract { .. } => {}
       // Creating is a single fast syscall or two, like a rename.
       Command::Create { path, dir } => {
         let _ = self.tx.send(create(&path, dir));
@@ -572,6 +727,10 @@ impl Runtime {
 /// clipboard.
 pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLimits) -> Vec<Event> {
   let token = CancelToken::never();
+  let cmd = match file_job(cmd) {
+    Ok((job, work)) => return vec![run_file_job(job, work, &mut Meter::silent())],
+    Err(cmd) => *cmd,
+  };
   match cmd {
     Command::LoadDir(path) => vec![load_dir(&path)],
     Command::Preview {
@@ -593,19 +752,13 @@ pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLim
     Command::VcsScan(req) => VcsScanner::default().scan(&req).into_iter().collect(),
     Command::Rename { from, to } => vec![rename(&from, &to)],
     Command::Zoxide { keywords, exclude } => vec![zoxide_query(&keywords, &exclude)],
-    Command::Paste {
-      sources,
-      dest,
-      mode,
-      overwrite,
-    } => vec![paste(&sources, &dest, mode, overwrite)],
-    Command::Delete { paths, trash } => vec![delete(&paths, trash.as_deref())],
-    Command::Extract {
-      archives,
-      dest,
-      skip_damaged,
-    } => vec![extract(&archives, &dest, skip_damaged)],
     Command::Create { path, dir } => vec![create(&path, dir)],
+    // Tasks run to the end at once here, so there is nothing to pause or cancel.
+    Command::Paste { .. }
+    | Command::Delete { .. }
+    | Command::Extract { .. }
+    | Command::CancelJob(_)
+    | Command::PauseJob(..) => Vec::new(),
     Command::Open(_)
     | Command::Spawn { .. }
     | Command::Shell { .. }

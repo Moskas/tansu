@@ -196,6 +196,14 @@ pub struct Theme {
   /// Permissions of entries owned by another user.
   pub status_perms_other: ThemeColor,
   pub error: ThemeColor,
+  /// Task progress bars and the keys in the task popup.
+  pub progress: ThemeColor,
+  /// The empty part of a progress bar.
+  pub progress_track: ThemeColor,
+  /// Finished tasks.
+  pub success: ThemeColor,
+  /// Questions that need an answer before a task goes on (a paste conflict).
+  pub warning: ThemeColor,
   pub help_key: ThemeColor,
   /// Prefixes of longer sequences in the which-key popup.
   pub help_group: ThemeColor,
@@ -241,6 +249,10 @@ impl Default for Theme {
       status_perms: hex(0x8ec07c),
       status_perms_other: hex(0xd3869b),
       error: hex(0xfb4934),
+      progress: hex(0xfabd2f),
+      progress_track: hex(0x3c3836),
+      success: hex(0xb8bb26),
+      warning: hex(0xfe8019),
       help_key: hex(0xfabd2f),
       help_group: hex(0xfb4934),
       vcs_sync: hex(0xb8bb26),

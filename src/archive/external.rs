@@ -3,11 +3,13 @@
 //! terminal: each gets an empty one, and no standard input.
 
 use std::ffi::OsStr;
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::Duration;
 
 use super::{Contents, ListError, Member, MemberKind};
+use crate::jobs::Meter;
 use crate::preview::PreviewError;
 use crate::preview::thumbnail::run_command;
 
@@ -100,9 +102,40 @@ fn listing_locale(command: &mut Command) {
   command.env("LC_TIME", "C");
 }
 
+/// How often a running program is checked on.
+const POLL: Duration = Duration::from_millis(50);
+
+/// Waits for `child`, collecting its error output, and kills it once `meter` stops. A
+/// pause does not reach the program: it runs on, and the task pauses after it.
+fn wait_stoppable(mut child: Child, meter: &mut Meter) -> io::Result<(ExitStatus, Vec<u8>)> {
+  // Read on the side, so a program writing a lot of errors cannot block on a full pipe.
+  let mut stderr = child.stderr.take();
+  let reader = std::thread::spawn(move || {
+    let mut buf = Vec::new();
+    if let Some(stderr) = &mut stderr {
+      let _ = stderr.read_to_end(&mut buf);
+    }
+    buf
+  });
+  let status = loop {
+    if let Some(status) = child.try_wait()? {
+      break status;
+    }
+    if let Err(e) = meter.check() {
+      let _ = child.kill();
+      let _ = child.wait();
+      let _ = reader.join();
+      return Err(e);
+    }
+    std::thread::sleep(POLL);
+  };
+  Ok((status, reader.join().unwrap_or_default()))
+}
+
 /// Extracts `path` into the empty directory `dir` with the first of `tools` installed.
-/// Programs run in the user's locale, so names come out in their character set.
-pub fn extract(path: &Path, tools: &[Tool], dir: &Path) -> io::Result<()> {
+/// Programs run in the user's locale, so names come out in their character set. A
+/// program still running when `meter` stops is killed.
+pub fn extract(path: &Path, tools: &[Tool], dir: &Path, meter: &mut Meter) -> io::Result<()> {
   for &tool in tools {
     for &program in tool.programs() {
       let mut command = Command::new(program);
@@ -122,25 +155,25 @@ pub fn extract(path: &Path, tools: &[Tool], dir: &Path) -> io::Result<()> {
           .arg(dir.join("")),
         Tool::Bsdtar => command.arg("-xf").arg(path).arg("-C").arg(dir),
       };
-      let output = match command
+      command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-      {
+        .stderr(Stdio::piped());
+      let child = match command.spawn() {
         Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
         Err(e) => return Err(io::Error::other(format!("{program}: {e}"))),
-        Ok(output) => output,
+        Ok(child) => child,
       };
-      if output.status.success() {
+      let (status, stderr) = wait_stoppable(child, meter)?;
+      if status.success() {
         return Ok(());
       }
-      let stderr = String::from_utf8_lossy(&output.stderr);
+      let stderr = String::from_utf8_lossy(&stderr);
       let reason = stderr
         .lines()
         .map(str::trim)
         .rfind(|l| !l.is_empty() && !l.starts_with("bsdtar: Error exit delayed"))
-        .map_or_else(|| output.status.to_string(), str::to_string);
+        .map_or_else(|| status.to_string(), str::to_string);
       return Err(io::Error::other(format!("{program}: {reason}")));
     }
   }

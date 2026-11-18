@@ -703,3 +703,37 @@ fn shift_jis_names_without_the_utf8_flag_are_decoded() {
     ]
   );
 }
+
+#[test]
+fn extraction_is_counted_and_a_stopped_one_leaves_nothing() {
+  use tansu::jobs::{Meter, Progress};
+  let tmp = tempfile::tempdir().unwrap();
+  let path = tmp.path().join("bundle.zip");
+  zip_fixture(&path, true);
+  assert_eq!(archive::extract_totals(&path), (Some(3), 1010));
+  let mut meter = Meter::silent();
+  archive::extract_with(&path, tmp.path(), false, &mut meter).unwrap();
+  assert_eq!(meter.progress.files_done, 3);
+  assert_eq!(meter.progress.bytes_done, 1010);
+
+  // A tar counts the bytes read from the archive.
+  let (tar_tmp, tar) = dest_with("p.tar.gz", &compress(&tar_bytes(), Compression::Gzip));
+  let size = fs::metadata(&tar).unwrap().len();
+  assert_eq!(archive::extract_totals(&tar), (None, size));
+  let mut meter = Meter::silent();
+  archive::extract_with(&tar, tar_tmp.path(), false, &mut meter).unwrap();
+  assert_eq!(meter.progress.bytes_done, size);
+
+  let checks = std::cell::Cell::new(0);
+  let stop = || {
+    checks.set(checks.get() + 1);
+    checks.get() > 3
+  };
+  let mut report = |_: &Progress| {};
+  let mut meter = Meter::new(&stop, &mut report);
+  let dest = tmp.path().join("out");
+  fs::create_dir(&dest).unwrap();
+  assert!(archive::extract_with(&path, &dest, false, &mut meter).is_err());
+  assert!(meter.stopped());
+  assert!(names(&dest).is_empty(), "{:?}", names(&dest));
+}

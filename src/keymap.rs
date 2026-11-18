@@ -270,6 +270,7 @@ pub const DEFAULT_BINDINGS: &[(&str, Action)] = &[
   ("md", Action::MakeDir),
   ("mf", Action::Touch),
   ("x", Action::Extract),
+  ("w", Action::Tasks),
   ("uy", Action::ClearBuffer),
   ("ud", Action::ClearBuffer),
   ("yp", Action::YankPath),

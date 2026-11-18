@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{Format, builtin, external};
 use crate::fs::ops::free_name;
+use crate::jobs::Meter;
 
 /// What an extraction created.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +40,49 @@ pub enum ExtractError {
 /// members (zip only; other formats fail as a whole) are an error unless `skip_damaged`
 /// is set, in which case the rest is extracted.
 pub fn extract(archive: &Path, dest: &Path, skip_damaged: bool) -> Result<Extracted, ExtractError> {
+  extract_with(archive, dest, skip_damaged, &mut Meter::silent())
+}
+
+/// What extracting `archive` counts with a [`Meter`]: for a zip unpacked in-process its
+/// files and their unpacked bytes; otherwise no files and the archive's own size, as tar
+/// counts the bytes it reads and another program's work counts all at once.
+pub fn extract_totals(archive: &Path) -> (Option<u64>, u64) {
+  let size = fs::metadata(archive).map_or(0, |m| m.len());
+  let name = archive
+    .file_name()
+    .map(|n| n.to_string_lossy().into_owned())
+    .unwrap_or_default();
+  if !matches!(Format::from_name(&name), Some((Format::Zip, _)))
+    || !builtin::zip_supported(archive).unwrap_or(false)
+  {
+    return (None, size);
+  }
+  let Ok(mut zip) = fs::File::open(archive)
+    .map_err(|_| ())
+    .and_then(|f| zip::ZipArchive::new(f).map_err(|_| ()))
+  else {
+    return (None, size);
+  };
+  let (mut files, mut bytes) = (0, 0);
+  for i in 0..zip.len() {
+    if let Ok(file) = zip.by_index_raw(i)
+      && !file.is_dir()
+    {
+      files += 1;
+      bytes += file.size();
+    }
+  }
+  (Some(files), bytes)
+}
+
+/// Like [`extract`], counting its work with `meter` (see [`extract_totals`]). An
+/// extraction the meter stops leaves nothing behind.
+pub fn extract_with(
+  archive: &Path,
+  dest: &Path,
+  skip_damaged: bool,
+  meter: &mut Meter,
+) -> Result<Extracted, ExtractError> {
   let name = archive
     .file_name()
     .map(|n| n.to_string_lossy().into_owned())
@@ -55,8 +99,9 @@ pub fn extract(archive: &Path, dest: &Path, skip_damaged: bool) -> Result<Extrac
       "extract: {shown}: not a file"
     )));
   }
+  meter.item(&name).map_err(err)?;
   let tmp = make_temp_dir(dest, &name).map_err(err)?;
-  let result = match unpack(archive, format, stem, &tmp) {
+  let result = match unpack(archive, format, stem, &tmp, meter) {
     Err(e) => Err(err(e)),
     Ok(damaged) if !damaged.is_empty() && !skip_damaged => Err(ExtractError::Damaged {
       archive: shown.clone(),
@@ -89,19 +134,30 @@ fn make_temp_dir(dest: &Path, name: &str) -> io::Result<PathBuf> {
 }
 
 /// Unpacks `archive` into `dir` and returns the damaged members it left out.
-fn unpack(archive: &Path, format: Format, stem: &str, dir: &Path) -> io::Result<Vec<String>> {
+fn unpack(
+  archive: &Path,
+  format: Format,
+  stem: &str,
+  dir: &Path,
+  meter: &mut Meter,
+) -> io::Result<Vec<String>> {
   let mut damaged = Vec::new();
+  // Another program's work is counted once it is done.
+  let run_program = |tools: &[external::Tool], meter: &mut Meter| {
+    external::extract(archive, tools, dir, meter)?;
+    meter.add_bytes(fs::metadata(archive).map_or(0, |m| m.len()))
+  };
   match format {
     // Members compressed with something other than deflate need a program.
-    Format::Zip if !builtin::zip_supported(archive)? => external::extract(
-      archive,
-      &[external::Tool::SevenZip, external::Tool::Bsdtar],
-      dir,
-    )?,
-    Format::Zip => damaged = builtin::extract_zip(archive, dir)?,
-    Format::Tar(c) => builtin::extract_tar(archive, c, dir)?,
-    Format::Compressed(c) => builtin::extract_compressed(archive, c, dir, &dir.join(stem))?,
-    Format::External(tools) => external::extract(archive, tools, dir)?,
+    Format::Zip if !builtin::zip_supported(archive)? => {
+      run_program(&[external::Tool::SevenZip, external::Tool::Bsdtar], meter)?
+    }
+    Format::Zip => damaged = builtin::extract_zip(archive, dir, meter)?,
+    Format::Tar(c) => builtin::extract_tar(archive, c, dir, meter)?,
+    Format::Compressed(c) => {
+      builtin::extract_compressed(archive, c, dir, &dir.join(stem), meter)?;
+    }
+    Format::External(tools) => run_program(tools, meter)?,
   }
   drop_special_bits(dir);
   Ok(damaged)

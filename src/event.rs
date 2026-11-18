@@ -7,8 +7,10 @@ use std::time::Duration;
 
 use crossterm::event::{self as ct, KeyEvent, MouseEvent, MouseEventKind};
 
+use crate::fs::ops::Conflict;
 use crate::fs::{DirCount, DirListing, PasteMode};
 use crate::graphics::EncodedImage;
+use crate::jobs::{JobId, Progress};
 use crate::preview::Preview;
 use crate::vcs::{DirVcs, RepoStatus};
 
@@ -42,25 +44,42 @@ pub enum Event {
     to: PathBuf,
     result: Result<(), String>,
   },
-  /// Result of pasting into `dest`: each source with where it ended up, or why it failed.
+  /// How far a task got.
+  JobProgress {
+    job: JobId,
+    progress: Progress,
+  },
+  /// A paste found these names taken and waits for answers; nothing was pasted.
+  PasteConflicts {
+    job: JobId,
+    conflicts: Vec<Conflict>,
+  },
+  /// Result of pasting into `dest`: each source with where it ended up (`None`: skipped),
+  /// or why it failed. A `stopped` task left the rest out.
   Pasted {
+    job: JobId,
     dest: PathBuf,
     mode: PasteMode,
-    results: Vec<(PathBuf, Result<PathBuf, String>)>,
+    results: Vec<(PathBuf, Result<Option<PathBuf>, String>)>,
+    stopped: bool,
   },
   /// Result of deleting (or trashing) each path.
   Deleted {
+    job: JobId,
     trashed: bool,
     results: Vec<(PathBuf, Result<(), String>)>,
+    stopped: bool,
   },
   /// Result of extracting archives into `dest`: each archive with what it was extracted to,
   /// or why it failed.
   Extracted {
+    job: JobId,
     dest: PathBuf,
     results: Vec<(
       PathBuf,
       Result<crate::archive::Extracted, crate::archive::ExtractError>,
     )>,
+    stopped: bool,
   },
   /// Result of creating a directory (`dir`) or an empty file at `path`.
   Created {

@@ -11,6 +11,7 @@ use crate::console::LineEditor;
 use crate::fs::FileClass;
 use crate::fs::meta::{format_mtime, format_permissions, human_size_compact};
 use crate::ui::columns::{entry_info, mark_color};
+use crate::ui::jobs;
 use crate::vcs::Mark;
 
 /// Left: metadata of the selected entry (or a message). Right: totals and position.
@@ -60,8 +61,17 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App) {
     )
   };
   let right_w = display_width(&right) as u16;
-  let right_x = area.right().saturating_sub(right_w).max(area.x);
+  let mut right_x = area.right().saturating_sub(right_w).max(area.x);
   buf.set_stringn(right_x, area.y, &right, area.width as usize, base);
+
+  // Tasks in the background, left of the totals while there is room.
+  if let Some(tasks) = tasks_indicator(app) {
+    let w = tasks.width() as u16 + 2;
+    if right_x >= area.x + w + MIN_LEFT {
+      right_x -= w;
+      tasks.render(Rect::new(right_x, area.y, w - 2, 1), buf);
+    }
+  }
 
   let left_w = right_x.saturating_sub(area.x).saturating_sub(1);
   let left = Rect::new(area.x, area.y, left_w, 1);
@@ -153,6 +163,65 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App) {
 
 /// Longest commit summary shown (ranger's `vcs_msg_length` default).
 const COMMIT_SUMMARY_LEN: usize = 50;
+/// Cells the task indicator leaves for the selection's details at least.
+const MIN_LEFT: u16 = 20;
+/// Width of the indicator's progress bar.
+const TASK_BAR: usize = 10;
+
+/// `⠋ extract ━━━━━━━━━━  62% +1` for tasks running while the popup is hidden, or what a
+/// task waits for.
+fn tasks_indicator(app: &App) -> Option<Line<'static>> {
+  if app.jobs.list.is_empty() || app.tasks_visible() {
+    return None;
+  }
+  let theme = &app.config.theme;
+  let dim = Style::new().fg(theme.dim.0);
+  if let Some(job) = app.jobs.prompting() {
+    return Some(Line::from(vec![
+      Span::styled(
+        format!("! {} needs an answer", job.kind.name().to_lowercase()),
+        Style::new()
+          .fg(theme.warning.0)
+          .add_modifier(Modifier::BOLD),
+      ),
+      Span::styled(" (w)", dim),
+    ]));
+  }
+  let job = app
+    .jobs
+    .list
+    .iter()
+    .find(|j| j.is_running())
+    .or(app.jobs.list.first())?;
+  let accent = Style::new().fg(theme.progress.0);
+  let lead = if job.paused {
+    "‖".to_string()
+  } else {
+    jobs::spinner(job.created).to_string()
+  };
+  let mut spans = vec![Span::styled(
+    format!("{lead} {} ", job.kind.name().to_lowercase()),
+    accent,
+  )];
+  if let Some(f) = job.progress.fraction() {
+    let fill = if job.paused { dim } else { accent };
+    spans.extend(jobs::bar(
+      f,
+      TASK_BAR,
+      fill,
+      Style::new().fg(theme.progress_track.0),
+    ));
+    spans.push(Span::styled(
+      format!(" {}", jobs::percent(f).trim_start()),
+      Style::new().fg(theme.fg.0).add_modifier(Modifier::BOLD),
+    ));
+  }
+  let others = app.jobs.list.len() - 1;
+  if others > 0 {
+    spans.push(Span::styled(format!(" +{others}"), dim));
+  }
+  Some(Line::from(spans))
+}
 
 /// Like ranger, drops whole segments from the end until the rest fits. The first segment
 /// is always kept (and clipped by the caller if even it is too wide).
