@@ -466,16 +466,16 @@ fn validation_repairs_bad_values() {
 }
 
 #[test]
-fn readme_sample_config_parses_without_warnings() {
-  let readme = include_str!("../README.md");
-  let start = readme.find("```toml\n").expect("toml block") + "```toml\n".len();
-  let len = readme[start..].find("```").unwrap();
-  let mut cfg = Config::parse(&readme[start..start + len]).expect("sample config parses");
+fn documented_sample_config_parses_without_warnings() {
+  let doc = include_str!("../docs/configuration.md");
+  let start = doc.find("```toml\n").expect("toml block") + "```toml\n".len();
+  let len = doc[start..].find("```").unwrap();
+  let mut cfg = Config::parse(&doc[start..start + len]).expect("sample config parses");
   assert!(cfg.validate().is_empty());
   assert_eq!(
     cfg.theme,
     tansu::config::Theme::default(),
-    "README lists the defaults"
+    "configuration.md lists the defaults"
   );
   let (_, warnings) = Keymap::with_overrides(&cfg.keys);
   assert!(warnings.is_empty(), "{warnings:?}");
