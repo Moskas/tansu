@@ -2656,3 +2656,213 @@ fn x_on_a_damaged_archive_asks_to_extract_the_rest() {
   assert!(work.join("album/01.flac").is_file());
   assert!(!work.join("album/02.flac").exists());
 }
+
+// ---- tabs ----
+
+#[test]
+fn tabs_keep_their_own_directory_and_selection() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "j"); // beta
+  assert_eq!(app.tab_numbers(), [1]);
+
+  // A new tab opens on the same directory and selection.
+  press(&mut app, "gn");
+  assert_eq!((app.tab_numbers(), app.current_tab()), (vec![1, 2], 2));
+  assert_eq!(
+    (app.cwd.clone(), selected(&app)),
+    (work.clone(), "beta".into())
+  );
+
+  press(&mut app, "kl"); // alpha in the new tab
+  press(&mut app, "hjj"); // blob.bin in `work`
+  assert_eq!(selected(&app), "blob.bin");
+
+  // Tab 1 is where it was left, though tab 2 moved in the same directory since.
+  press(&mut app, "gt");
+  assert_eq!((app.current_tab(), selected(&app)), (1, "beta".into()));
+  press(&mut app, "<Tab>");
+  assert_eq!((app.current_tab(), selected(&app)), (2, "blob.bin".into()));
+  press(&mut app, "<S-Tab>");
+  assert_eq!(app.current_tab(), 1);
+
+  // `:cd -` is per tab: tab 2 went through alpha, tab 1 never left.
+  press(&mut app, ":cd -<Enter>");
+  assert!(
+    app
+      .message
+      .as_ref()
+      .is_some_and(|m| m.text.contains("no previous directory"))
+  );
+  press(&mut app, "gT:cd -<Enter>");
+  assert_eq!(
+    (app.current_tab(), app.cwd.clone()),
+    (2, work.join("alpha"))
+  );
+}
+
+#[test]
+fn alt_digits_open_numbered_tabs_and_close_moves_to_a_neighbour() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "<A-3>");
+  assert_eq!((app.tab_numbers(), app.current_tab()), (vec![1, 3], 3));
+  press(&mut app, "l"); // alpha
+  press(&mut app, "<A-1>");
+  assert_eq!(app.cwd, work);
+  press(&mut app, "<A-3>");
+  assert_eq!(app.cwd, work.join("alpha"));
+  // `gn` takes the lowest free number.
+  press(&mut app, "gn");
+  assert_eq!((app.tab_numbers(), app.current_tab()), (vec![1, 2, 3], 2));
+  assert_eq!(app.cwd, work.join("alpha"));
+
+  // Closing goes to the next tab, or the previous one from the last.
+  press(&mut app, "<A-1>gc");
+  assert_eq!((app.tab_numbers(), app.current_tab()), (vec![2, 3], 2));
+  press(&mut app, "<A-3><C-w>");
+  assert_eq!((app.tab_numbers(), app.current_tab()), (vec![2], 2));
+  // The only tab is never closed by `gc`.
+  press(&mut app, "gc");
+  assert_eq!(app.tab_numbers(), [2]);
+  assert!(!app.should_quit);
+
+  // `uq` reopens the last closed tab, as it was, with the lowest free number.
+  press(&mut app, "h");
+  press(&mut app, "uq");
+  assert_eq!((app.tab_numbers(), app.current_tab()), (vec![1, 2], 1));
+  assert_eq!(app.cwd, work.join("alpha"));
+  press(&mut app, "uq");
+  assert_eq!((app.tab_numbers(), app.current_tab()), (vec![1, 2, 3], 3));
+  assert_eq!(app.cwd, work);
+  press(&mut app, "uq");
+  assert!(
+    app
+      .message
+      .as_ref()
+      .is_some_and(|m| m.text.contains("no closed tab"))
+  );
+}
+
+#[test]
+fn q_closes_tabs_until_the_last_and_capital_q_quits() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "gngn");
+  press(&mut app, "q");
+  assert_eq!(app.tab_numbers(), [1, 2]);
+  press(&mut app, ":q<Enter>");
+  assert_eq!(app.tab_numbers(), [1]);
+  assert!(!app.should_quit);
+  press(&mut app, "q");
+  assert!(app.should_quit);
+
+  let mut app = new_app(&work);
+  press(&mut app, "gnQ");
+  assert!(app.should_quit);
+  let mut app = new_app(&work);
+  press(&mut app, "gn:qa<Enter>");
+  assert!(app.should_quit);
+}
+
+#[test]
+fn tab_open_on_the_command_line() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, ":tab_open 4<Enter>");
+  assert_eq!((app.tab_numbers(), app.current_tab()), (vec![1, 4], 4));
+  press(&mut app, ":tab_open 10<Enter>");
+  assert!(
+    app
+      .message
+      .as_ref()
+      .is_some_and(|m| m.text.contains("tab_open"))
+  );
+  assert_eq!(app.current_tab(), 4);
+}
+
+#[test]
+fn a_tab_whose_directory_is_gone_shows_its_closest_parent() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "gnl"); // alpha in tab 2
+  press(&mut app, "gt");
+  fs::remove_dir_all(work.join("alpha")).unwrap();
+  press(&mut app, "gt");
+  assert_eq!(app.cwd, work);
+}
+
+#[test]
+fn header_shows_tabs_and_clicks_switch_tabs() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  assert!(render(&app)[0].trim_end().ends_with("alpha"));
+  press(&mut app, "gn<A-4>");
+  let header = render(&app)[0].clone();
+  assert!(header.ends_with(" 1 work  2 work  4 work "), "{header:?}");
+  // The current tab's label is drawn reversed.
+  let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
+  terminal.draw(|f| tansu::ui::render(f, &app)).unwrap();
+  let buf = terminal.backend().buffer().clone();
+  let reversed = |x: u16| buf[(x, 0)].modifier.contains(Modifier::REVERSED);
+  assert!(reversed(WIDTH - 1) && reversed(WIDTH - 8) && !reversed(WIDTH - 10));
+
+  left(&mut app, WIDTH - 10, 0);
+  assert_eq!(app.current_tab(), 2);
+  left(&mut app, WIDTH - 20, 0);
+  assert_eq!(app.current_tab(), 1);
+  mouse(&mut app, MouseEventKind::ScrollUp, 2, 0);
+  assert_eq!(app.current_tab(), 4);
+}
+
+#[test]
+fn tasks_belong_to_the_tab_they_were_started_from() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "yygngngT"); // tabs 1 to 3, on 2
+  press_keys_without_pump(&mut app, "pp");
+  assert_eq!(app.jobs.list[0].tab, 2);
+  press_keys_without_pump(&mut app, "gT");
+  // Tab 2's label carries the task's spinner.
+  let header = render(&app)[0].clone();
+  let after = header
+    .split(" 2 work ")
+    .nth(1)
+    .and_then(|s| s.chars().next());
+  assert!(after.is_some_and(|c| c != ' '), "{header:?}");
+  // Closing tab 2 hands the task to tab 3, shown next.
+  press_keys_without_pump(&mut app, "gtgc");
+  assert_eq!(app.current_tab(), 3);
+  assert_eq!(app.jobs.list[0].tab, 3);
+}
+
+#[test]
+fn uppercase_shell_macros_refer_to_the_next_tab() {
+  use tansu::shell::ShellMode;
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "gnl"); // tab 2: alpha, a.txt selected
+  press(&mut app, "gt");
+  press(&mut app, ":shell cp %f %D");
+  press_keys_without_pump(&mut app, "<Enter>");
+  let quote = |p: &Path| format!("'{}'", p.display());
+  assert_eq!(
+    app.take_commands(),
+    vec![Command::Shell {
+      script: format!("cp 'alpha' {}", quote(&work.join("alpha"))).into(),
+      cwd: work.clone(),
+      mode: ShellMode::Foreground { wait_enter: false },
+      program: "cp".into(),
+    }]
+  );
+  // Marks in the next tab's directory are its selection.
+  press(&mut app, "gt<Space><Space>gt"); // marks both, b.txt selected
+  press(&mut app, ":shell echo %S %F");
+  press_keys_without_pump(&mut app, "<Enter>");
+  let a = quote(&work.join("alpha/a.txt"));
+  let b = quote(&work.join("alpha/b.txt"));
+  let Command::Shell { script, .. } = &app.take_commands()[0] else {
+    panic!("not a shell command");
+  };
+  assert_eq!(script.to_str().unwrap(), format!("echo {a} {b} {b}"));
+}

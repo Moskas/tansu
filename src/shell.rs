@@ -102,6 +102,16 @@ pub struct MacroContext<'a> {
   pub selection: &'a [PathBuf],
   /// Paths in the copy/cut buffer.
   pub copied: &'a [PathBuf],
+  /// The next tab, for `%D`, `%F`, `%S` and `%P`; `None` when this is the only tab, which
+  /// ranger then treats as its own next tab.
+  pub next_tab: Option<TabMacros<'a>>,
+}
+
+/// What the uppercase macros expand to: a tab's directory, selected entry and selection.
+pub struct TabMacros<'a> {
+  pub dir: &'a Path,
+  pub selected: Option<&'a Path>,
+  pub selection: &'a [PathBuf],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -118,8 +128,8 @@ pub enum MacroError {
 /// - `%p`: the full paths of the marked files, or of the selected file
 /// - `%c`: full paths in the copy/cut buffer
 /// - `%t`: tagged files, which tansu does not have, so empty
-/// - `%D`, `%F`, `%S`, `%P`: the same for the next tab, which is this one; `%F` and `%S` are
-///   full paths
+/// - `%D`, `%F`, `%S`, `%P`: the same for the next tab (this one when it is the only tab);
+///   `%F` and `%S` are full paths
 /// - `%%`: a literal `%`
 ///
 /// A macro name is the longest run of letters, digits and `_` after the `%`, or a name in
@@ -164,6 +174,12 @@ fn is_macro_name(s: &str) -> bool {
 /// The quoted value of a macro, or `None` if `name` is not one.
 fn macro_value(name: &str, ctx: &MacroContext) -> Result<Option<Vec<u8>>, MacroError> {
   let file_name = || ctx.selected.and_then(Path::file_name);
+  let this_tab = TabMacros {
+    dir: ctx.dir,
+    selected: ctx.selected,
+    selection: ctx.selection,
+  };
+  let next_tab = ctx.next_tab.as_ref().unwrap_or(&this_tab);
   let value = match name {
     "f" => {
       let name = file_name().ok_or_else(|| MacroError::NothingSelected(name.to_string()))?;
@@ -181,16 +197,15 @@ fn macro_value(name: &str, ctx: &MacroContext) -> Result<Option<Vec<u8>>, MacroE
     "p" => quote_all(ctx.selection),
     "c" => quote_all(ctx.copied),
     "t" => Vec::new(),
-    // The next tab's directory, file and selection. Tansu has a single tab, which ranger
-    // then treats as its own next tab; the files are given as full paths.
-    "D" => shell_quote(ctx.dir.as_os_str().as_bytes()),
+    // The next tab's directory, file and selection; the files are given as full paths.
+    "D" => shell_quote(next_tab.dir.as_os_str().as_bytes()),
     "F" => {
-      let path = ctx
+      let path = next_tab
         .selected
         .ok_or_else(|| MacroError::NothingSelected(name.to_string()))?;
       shell_quote(path.as_os_str().as_bytes())
     }
-    "S" | "P" => quote_all(ctx.selection),
+    "S" | "P" => quote_all(next_tab.selection),
     _ => return Ok(None),
   };
   Ok(Some(value))

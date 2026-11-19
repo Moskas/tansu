@@ -204,6 +204,8 @@ pub enum ConsoleError {
   MissingSortKey,
   #[error("sort: unknown sort type `{0}`")]
   UnknownSortKey(String),
+  #[error("tab_open: missing or invalid tab number `{0}` (1 to 9)")]
+  BadTabNumber(String),
   #[error("{command}: unexpected argument `{arg}`")]
   UnexpectedArgument { command: String, arg: String },
 }
@@ -213,6 +215,9 @@ pub const OPEN_WITH: &str = "open_with";
 
 /// Name of the command that changes the sort order, followed by a sort type.
 pub const SORT: &str = "sort";
+
+/// Name of the command that goes to a tab, followed by its number.
+pub const TAB_OPEN: &str = "tab_open";
 
 /// Name of the command that renames the selection. Without a name it opens the command
 /// line prefilled with the current one.
@@ -337,7 +342,9 @@ fn command_names() -> Vec<String> {
     .filter(|n| !n.contains(' ') && ![MKDIR, RENAME, SEARCH, SHELL, TOUCH].contains(n))
     .map(str::to_string)
     .collect();
-  let with_argument = [CD, MKDIR, OPEN_WITH, RENAME, SEARCH, SHELL, SORT, TOUCH, Z];
+  let with_argument = [
+    CD, MKDIR, OPEN_WITH, RENAME, SEARCH, SHELL, SORT, TAB_OPEN, TOUCH, Z,
+  ];
   names.extend(with_argument.map(|n| format!("{n} ")));
   names.sort();
   names.dedup();
@@ -380,6 +387,11 @@ pub fn completions(line: &str, src: &CompletionSource) -> Vec<String> {
       .map(|k| k.name())
       .filter(|k| k.starts_with(arg))
       .map(|k| format!("{SORT} {k}"))
+      .collect(),
+    TAB_OPEN => (1..=9)
+      .map(|n| n.to_string())
+      .filter(|n| n.starts_with(arg))
+      .map(|n| format!("{TAB_OPEN} {n}"))
       .collect(),
     OPEN_WITH => {
       let (head, program) = match arg.strip_prefix(DETACH_FLAG) {
@@ -459,6 +471,14 @@ fn parse_words<'a>(
   }
   let action = match name {
     "q" => Action::Quit,
+    "qa" | "quitall" => Action::QuitAll,
+    TAB_OPEN => {
+      let n = args.next().unwrap_or_default();
+      match n.parse::<u8>() {
+        Ok(n @ 1..=9) => Action::TabOpen(n),
+        _ => return Err(ConsoleError::BadTabNumber(n.to_string())),
+      }
+    }
     SORT => {
       let key = args.next().ok_or(ConsoleError::MissingSortKey)?;
       let key = key

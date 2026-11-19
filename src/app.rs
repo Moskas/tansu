@@ -27,7 +27,7 @@ use crate::keymap::{Key, KeyResult, Keymap};
 use crate::nav::{Cursor, ScrollPos, passive_offset};
 use crate::preview::{Preview, PreviewLimits};
 use crate::search::Pattern;
-use crate::shell::{MacroContext, ShellFlags, ShellMode};
+use crate::shell::{MacroContext, ShellFlags, ShellMode, TabMacros};
 use crate::vcs::{DirVcs, FileStatus, Mark, RepoStatus, VcsRequest};
 
 const PREVIEW_CACHE_LIMIT: usize = 128;
@@ -288,6 +288,45 @@ pub fn display_name(path: &Path) -> String {
     .unwrap_or_default()
 }
 
+/// Highest tab number; tabs are numbered 1 to 9 so `<A-1>`..`<A-9>` reach each of them.
+const MAX_TABS: usize = 9;
+
+/// A tab that is not shown, as it was left. Like ranger, a tab has its own directory and
+/// selection; marks, the buffer, the search and the settings are shared.
+#[derive(Debug, Clone)]
+struct Tab {
+  cwd: PathBuf,
+  /// The entry selected in `cwd`.
+  selected: Option<PathBuf>,
+  /// Directory left by the tab's last directory change, for `:cd -`.
+  previous_dir: Option<PathBuf>,
+}
+
+/// An open tab as its label in the header shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabSummary {
+  pub number: usize,
+  /// Its directory's name, safe to draw.
+  pub name: String,
+  /// The state of a task started from it.
+  pub task: Option<TabTask>,
+  /// Entries marked in its directory that file operations would act on.
+  pub marks: usize,
+}
+
+/// The state of a tab's task, as far as its label shows it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TabTask {
+  /// Waiting for an answer to a question (a paste conflict).
+  Waiting,
+  Paused,
+  Running {
+    since: Instant,
+    /// The part done, when it is known.
+    fraction: Option<f64>,
+  },
+}
+
 /// Entries copied (`yy`) or cut (`dd`), waiting to be pasted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileBuffer {
@@ -375,6 +414,12 @@ pub struct App {
   /// The last left click in the current column (its row and the entry it selected), for
   /// detecting double clicks.
   last_click: Option<(Instant, usize, PathBuf)>,
+  /// Number of the tab shown. Its state is the one in the fields above.
+  current_tab: usize,
+  /// The other tabs, by number. Numbers can have gaps (`<A-5>` with two tabs open).
+  tabs: std::collections::BTreeMap<usize, Tab>,
+  /// Closed tabs, the last closed at the end, for `uq`.
+  closed_tabs: Vec<Tab>,
   commands: Vec<Command>,
 }
 
@@ -430,6 +475,9 @@ impl App {
       previous_dir: None,
       select_after_load: None,
       last_click: None,
+      current_tab: 1,
+      tabs: std::collections::BTreeMap::new(),
+      closed_tabs: Vec::new(),
       commands: Vec::new(),
     };
     app.enter_dir(start, select);
@@ -449,6 +497,68 @@ impl App {
 
   pub fn rows(&self) -> usize {
     self.rows
+  }
+
+  /// Number of the tab shown.
+  pub fn current_tab(&self) -> usize {
+    self.current_tab
+  }
+
+  /// Numbers of the open tabs, in order.
+  pub fn tab_numbers(&self) -> Vec<usize> {
+    let mut numbers: Vec<usize> = self.tabs.keys().copied().collect();
+    numbers.push(self.current_tab);
+    numbers.sort_unstable();
+    numbers
+  }
+
+  /// The open tabs in order, with what their labels in the header show.
+  pub fn tab_summaries(&self) -> Vec<TabSummary> {
+    self
+      .tab_numbers()
+      .into_iter()
+      .map(|number| {
+        let cwd = match self.tabs.get(&number) {
+          Some(tab) => tab.cwd.as_path(),
+          None => self.cwd.as_path(),
+        };
+        let name = match display_name(cwd) {
+          name if name.is_empty() => "/".to_string(),
+          name => crate::fs::entry::sanitize(&name),
+        };
+        TabSummary {
+          number,
+          name,
+          task: self.tab_task(number),
+          marks: if self.marked.is_empty() {
+            0
+          } else {
+            self.marked_in(cwd).len()
+          },
+        }
+      })
+      .collect()
+  }
+
+  /// The task tab `number`'s label shows, picked like the status bar's: one waiting for an
+  /// answer, else a running one, else the first queued.
+  fn tab_task(&self, number: usize) -> Option<TabTask> {
+    let mut own = self.jobs.list.iter().filter(|j| j.tab == number);
+    let job = own
+      .clone()
+      .find(|j| j.prompt.is_some())
+      .or_else(|| own.clone().find(|j| j.is_running()))
+      .or_else(|| own.next())?;
+    Some(if job.prompt.is_some() {
+      TabTask::Waiting
+    } else if job.paused {
+      TabTask::Paused
+    } else {
+      TabTask::Running {
+        since: job.created,
+        fraction: job.progress.fraction(),
+      }
+    })
   }
 
   pub fn dir_state(&self, path: &Path) -> Option<&DirState> {
@@ -763,6 +873,10 @@ impl App {
     if self.console.is_some() || self.tasks_visible() {
       return;
     }
+    if ev.row == 0 {
+      self.header_mouse(ev);
+      return;
+    }
     let inner = crate::ui::layout::body_inner(self.width, self.rows as u16);
     let (cols, _) = crate::ui::layout::split_columns(inner, self.config.column_ratios);
     let pos = Position::new(ev.column, ev.row);
@@ -796,6 +910,28 @@ impl App {
       }
       MouseEventKind::Down(MouseButton::Left) => self.click(column, row, false, last_click),
       MouseEventKind::Down(MouseButton::Right) => self.click(column, row, true, last_click),
+      _ => {}
+    }
+  }
+
+  /// Mouse input on the header, as in ranger: a click on a tab's number goes to that tab and
+  /// the wheel steps through the tabs.
+  fn header_mouse(&mut self, ev: MouseEvent) {
+    match ev.kind {
+      MouseEventKind::Down(MouseButton::Left) => {
+        let clicked = crate::ui::header::tab_bar(self, self.width)
+          .into_iter()
+          .find(|t| (t.x..t.x + t.width).contains(&ev.column))
+          .and_then(|t| t.target);
+        if let Some(number) = clicked {
+          self.keymap.reset();
+          self.open_tab(number);
+        }
+      }
+      MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+        self.keymap.reset();
+        self.step_tab(ev.kind == MouseEventKind::ScrollDown);
+      }
       _ => {}
     }
   }
@@ -923,11 +1059,23 @@ impl App {
       .buffer
       .as_ref()
       .map_or_else(Vec::new, |b| b.paths.clone());
+    let next = self.next_tab().map(|tab| {
+      (
+        tab.cwd.clone(),
+        tab.selected.clone(),
+        self.tab_selection(tab),
+      )
+    });
     let ctx = MacroContext {
       dir: &self.cwd,
       selected: selected.as_deref(),
       selection: &selection,
       copied: copied.as_slice(),
+      next_tab: next.as_ref().map(|(dir, selected, selection)| TabMacros {
+        dir,
+        selected: selected.as_deref(),
+        selection,
+      }),
     };
     let script = match crate::shell::expand_macros(command, &ctx) {
       Ok(script) => flags.apply_sudo(script),
@@ -1295,6 +1443,7 @@ impl App {
       JobKind::from_paste(buffer.mode),
       what,
       Some(self.cwd.clone()),
+      self.current_tab,
     );
     let request = PasteRequest {
       sources: buffer.paths,
@@ -1579,7 +1728,7 @@ impl App {
       [one] => display_name(one),
       many => items(many.len()),
     };
-    let job = self.jobs.add(kind, what, None);
+    let job = self.jobs.add(kind, what, None, self.current_tab);
     self.commands.push(Command::Delete { job, paths, trash });
   }
 
@@ -1588,7 +1737,9 @@ impl App {
       [one] => display_name(one),
       many => items(many.len()),
     };
-    let job = self.jobs.add(JobKind::Extract, what, Some(dest.clone()));
+    let job = self
+      .jobs
+      .add(JobKind::Extract, what, Some(dest.clone()), self.current_tab);
     self.commands.push(Command::Extract {
       job,
       archives,
@@ -2117,7 +2268,23 @@ impl App {
         self.keymap.reset();
         self.console = Some(LineEditor::new());
       }
-      Action::Quit => self.should_quit = true,
+      Action::TabNew => self.new_tab(),
+      Action::TabClose => {
+        if !self.close_tab() {
+          self.set_info("this is the only tab");
+        }
+      }
+      Action::TabNext => self.step_tab(true),
+      Action::TabPrev => self.step_tab(false),
+      Action::TabRestore => self.restore_tab(),
+      Action::TabOpen(n) => self.open_tab(usize::from(n)),
+      // Like ranger, `q` closes the tab and quits only with the last one.
+      Action::Quit => {
+        if !self.close_tab() {
+          self.should_quit = true;
+        }
+      }
+      Action::QuitAll => self.should_quit = true,
     }
   }
 
@@ -2156,6 +2323,168 @@ impl App {
     self.enter_dir(parent, name);
   }
 
+  /// The shown tab's state, to keep while another tab is shown.
+  fn this_tab(&self) -> Tab {
+    Tab {
+      cwd: self.cwd.clone(),
+      selected: self.selected().map(|e| e.path.clone()),
+      previous_dir: self.previous_dir.clone(),
+    }
+  }
+
+  /// The lowest tab number not in use.
+  fn free_tab_number(&self) -> Option<usize> {
+    (1..=MAX_TABS).find(|n| *n != self.current_tab && !self.tabs.contains_key(n))
+  }
+
+  /// Shows `tab` as tab `number`. The tab shown until now must already be kept or dropped.
+  fn show_tab(&mut self, number: usize, tab: Tab) {
+    // The tab's directory may be gone since it was left: show the closest one still there,
+    // with the way back into the missing part selected.
+    let mut cwd = tab.cwd;
+    let mut select = tab.selected.as_deref().map(display_name);
+    while !cwd.is_dir() {
+      let Some(parent) = cwd.parent().map(Path::to_path_buf) else {
+        break;
+      };
+      select = Some(display_name(&cwd));
+      cwd = parent;
+    }
+    self.current_tab = number;
+    self.show_dir(cwd, select);
+    self.previous_dir = tab.previous_dir;
+  }
+
+  /// `<A-n>`: goes to tab `number`, opening it on the current directory when there is none.
+  fn open_tab(&mut self, number: usize) {
+    if number == self.current_tab {
+      return;
+    }
+    let target = match self.tabs.remove(&number) {
+      Some(tab) => tab,
+      None => Tab {
+        previous_dir: None,
+        ..self.this_tab()
+      },
+    };
+    self.tabs.insert(self.current_tab, self.this_tab());
+    self.show_tab(number, target);
+  }
+
+  /// `gn`: opens a tab on the current directory, numbered with the lowest free number.
+  fn new_tab(&mut self) {
+    match self.free_tab_number() {
+      Some(number) => self.open_tab(number),
+      None => self.set_error(format!("{MAX_TABS} tabs are open already")),
+    }
+  }
+
+  /// `gt` / `gT`: goes to the next or previous tab by number, wrapping around.
+  fn step_tab(&mut self, forward: bool) {
+    let numbers = self.tab_numbers();
+    let len = numbers.len();
+    let at = numbers
+      .iter()
+      .position(|&n| n == self.current_tab)
+      .unwrap_or(0);
+    let next = if forward {
+      (at + 1) % len
+    } else {
+      (at + len - 1) % len
+    };
+    self.open_tab(numbers[next]);
+  }
+
+  /// Closes the shown tab and goes to the next one, or to the previous one when it was the
+  /// last. Returns false, closing nothing, when it is the only tab.
+  fn close_tab(&mut self) -> bool {
+    let numbers = self.tab_numbers();
+    let Some(at) = numbers.iter().position(|&n| n == self.current_tab) else {
+      return false;
+    };
+    let next = if at + 1 < numbers.len() {
+      numbers[at + 1]
+    } else if at > 0 {
+      numbers[at - 1]
+    } else {
+      return false;
+    };
+    let Some(target) = self.tabs.remove(&next) else {
+      return false;
+    };
+    // Its tasks go on: the tab shown next takes them over so they stay in sight.
+    for job in &mut self.jobs.list {
+      if job.tab == self.current_tab {
+        job.tab = next;
+      }
+    }
+    self.closed_tabs.push(self.this_tab());
+    self.show_tab(next, target);
+    true
+  }
+
+  /// `uq`: reopens the last closed tab, with the lowest free number.
+  fn restore_tab(&mut self) {
+    if self.closed_tabs.is_empty() {
+      self.set_info("no closed tab to reopen");
+      return;
+    }
+    let Some(number) = self.free_tab_number() else {
+      self.set_error(format!("{MAX_TABS} tabs are open already"));
+      return;
+    };
+    let Some(tab) = self.closed_tabs.pop() else {
+      return;
+    };
+    self.tabs.insert(self.current_tab, self.this_tab());
+    self.show_tab(number, tab);
+  }
+
+  /// The next tab by number, wrapping around; `None` when this is the only tab.
+  fn next_tab(&self) -> Option<&Tab> {
+    self
+      .tabs
+      .range(self.current_tab + 1..)
+      .next()
+      .or_else(|| self.tabs.iter().next())
+      .map(|(_, tab)| tab)
+  }
+
+  /// What file operations would act on in `tab`: its marked entries that pass the hidden
+  /// filter, in listing order, or its selected entry when none are marked.
+  fn tab_selection(&self, tab: &Tab) -> Vec<PathBuf> {
+    let marked = self.marked_in(&tab.cwd);
+    if marked.is_empty() {
+      tab.selected.iter().cloned().collect()
+    } else {
+      marked
+    }
+  }
+
+  /// The marked entries of `dir` that pass the hidden filter, in listing order.
+  fn marked_in(&self, dir: &Path) -> Vec<PathBuf> {
+    match self.listing(dir) {
+      Some(listing) => listing
+        .entries
+        .iter()
+        .filter(|e| self.is_visible(e) && self.marked.contains(&e.path))
+        .map(|e| e.path.clone())
+        .collect(),
+      // Not listed any more: the marks alone, in path order.
+      None => {
+        let mut marked: Vec<PathBuf> = self
+          .marked
+          .iter()
+          .filter(|p| p.parent() == Some(dir))
+          .filter(|p| self.show_hidden || !display_name(p).starts_with('.'))
+          .cloned()
+          .collect();
+        marked.sort();
+        marked
+      }
+    }
+  }
+
   fn open_selected(&mut self) {
     let Some(entry) = self.selected().cloned() else {
       return;
@@ -2168,21 +2497,27 @@ impl App {
     }
   }
 
-  /// Makes `path` the current directory. Cached listings show immediately; a fresh listing
-  /// is always requested so the view does not go stale.
+  /// Makes `path` the current directory, recording the change for `:cd -` and zoxide.
   pub fn enter_dir(&mut self, path: PathBuf, select: Option<String>) {
+    if path != self.cwd {
+      self.previous_dir = Some(self.cwd.clone());
+      if self.config.zoxide_add {
+        self.commands.push(Command::ZoxideAdd(path.clone()));
+      }
+    }
+    self.show_dir(path, select);
+  }
+
+  /// Shows `path` as the current directory, with `select` (or the entry last selected there)
+  /// under the cursor. Cached listings show immediately; a fresh listing is always requested
+  /// so the view does not go stale.
+  fn show_dir(&mut self, path: PathBuf, select: Option<String>) {
     if let Some(e) = self.selected() {
       let name = e.name.clone();
       self.remembered.insert(self.cwd.clone(), name);
     }
     if let Some(name) = select {
       self.remembered.insert(path.clone(), name);
-    }
-    if path != self.cwd {
-      self.previous_dir = Some(self.cwd.clone());
-      if self.config.zoxide_add {
-        self.commands.push(Command::ZoxideAdd(path.clone()));
-      }
     }
     self.cwd = path.clone();
     self.cwd_symlinks = crate::fs::path::symlinked_ancestors(&path);

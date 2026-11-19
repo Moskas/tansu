@@ -202,6 +202,8 @@ pub struct Theme {
   pub special: ThemeColor,
   /// Marked entries, drawn bold in this color like ranger's yellow.
   pub marked: ThemeColor,
+  /// The count of marked entries on a tab's label in the header.
+  pub tab_marks: ThemeColor,
   /// Selected-row colors. Unset, the row is drawn in reverse video like ranger: the entry's
   /// color becomes the background. Setting either one overrides that side only.
   pub cursor_fg: Option<ThemeColor>,
@@ -258,6 +260,7 @@ impl Default for Theme {
       code: DEFAULT,
       special: DARK_YELLOW,
       marked: YELLOW,
+      tab_marks: MAGENTA,
       cursor_fg: None,
       cursor_bg: None,
       status_fg: DEFAULT,

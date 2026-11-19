@@ -291,6 +291,8 @@ pub struct Job {
   pub what: String,
   /// Where it puts things (copy, move and extract).
   pub dest: Option<PathBuf>,
+  /// Number of the tab it was started from, whose label in the header shows it.
+  pub tab: usize,
   pub progress: Progress,
   pub created: Instant,
   /// When the worker started on it; it is queued until then.
@@ -377,13 +379,14 @@ pub struct Jobs {
 }
 
 impl Jobs {
-  pub fn add(&mut self, kind: JobKind, what: String, dest: Option<PathBuf>) -> JobId {
+  pub fn add(&mut self, kind: JobKind, what: String, dest: Option<PathBuf>, tab: usize) -> JobId {
     self.next_id += 1;
     self.list.push(Job {
       id: self.next_id,
       kind,
       what,
       dest,
+      tab,
       progress: Progress::default(),
       created: Instant::now(),
       started: None,

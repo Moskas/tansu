@@ -1100,6 +1100,7 @@ fn shell_macros_expand_to_quoted_paths() {
     selected: Some(file),
     selection: &selection,
     copied: &[],
+    next_tab: None,
   };
   let expand = |s: &str| expand_macros(s, &ctx).map(|o| o.into_string().unwrap());
   assert_eq!(expand("vim %f").unwrap(), r"vim 'it'\''s a file.txt'");
@@ -1130,6 +1131,7 @@ fn shell_macros_expand_to_quoted_paths() {
     selected: None,
     selection: &[],
     copied: &[],
+    next_tab: None,
   };
   assert_eq!(expand_macros("touch new %s", &empty).unwrap(), "touch new ");
   assert_eq!(
@@ -1145,6 +1147,7 @@ fn shell_macros_expand_to_quoted_paths() {
     selected: None,
     selection: &[],
     copied: &copied,
+    next_tab: None,
   };
   assert_eq!(
     expand_macros("cp %c .", &buffer).unwrap(),
@@ -1158,12 +1161,28 @@ fn shell_macros_expand_to_quoted_paths() {
     selected: Some(Path::new("/d/c")),
     selection: &marked,
     copied: &[],
+    next_tab: None,
   };
   let expand = |s: &str| expand_macros(s, &multi).map(|o| o.into_string().unwrap());
   assert_eq!(expand("rm %s").unwrap(), "rm 'a b' 'c'");
   assert_eq!(expand("rm %p").unwrap(), "rm '/d/a b' '/d/c'");
   assert_eq!(expand("%P").unwrap(), expand("%p").unwrap());
   assert_eq!(expand("vim %f").unwrap(), "vim 'c'");
+
+  // With another tab open, the uppercase macros are about that tab.
+  let other = [PathBuf::from("/e/x"), PathBuf::from("/e/y")];
+  let tabs = MacroContext {
+    next_tab: Some(tansu::shell::TabMacros {
+      dir: Path::new("/e"),
+      selected: Some(Path::new("/e/y")),
+      selection: &other,
+    }),
+    ..multi
+  };
+  let expand = |s: &str| expand_macros(s, &tabs).map(|o| o.into_string().unwrap());
+  assert_eq!(expand("cp %p %D").unwrap(), "cp '/d/a b' '/d/c' '/e'");
+  assert_eq!(expand("vim %F").unwrap(), "vim '/e/y'");
+  assert_eq!(expand("rm %S").unwrap(), "rm '/e/x' '/e/y'");
 }
 
 #[test]
@@ -1215,6 +1234,7 @@ fn shell_commands_run_in_the_given_directory() {
     selected: Some(&file),
     selection: &selection,
     copied: &[],
+    next_tab: None,
   };
   // `%f` is a bare name, so this only passes when the shell runs in `dir`.
   let script = expand_macros("test -f %f && test -d %d && test -f %p", &ctx).unwrap();

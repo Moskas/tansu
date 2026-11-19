@@ -54,11 +54,19 @@ pub enum Action {
   Reload,
   ToggleHelp,
   CommandLine,
+  TabNew,
+  TabClose,
+  TabNext,
+  TabPrev,
+  TabRestore,
+  /// Go to the tab with this number (1 to 9), opening it when there is none.
+  TabOpen(u8),
   Quit,
+  QuitAll,
 }
 
 impl Action {
-  pub const ALL: [Action; 51] = [
+  pub const ALL: [Action; 66] = [
     Action::MoveUp,
     Action::MoveDown,
     Action::MoveTop,
@@ -109,7 +117,22 @@ impl Action {
     Action::Reload,
     Action::ToggleHelp,
     Action::CommandLine,
+    Action::TabNew,
+    Action::TabClose,
+    Action::TabNext,
+    Action::TabPrev,
+    Action::TabRestore,
+    Action::TabOpen(1),
+    Action::TabOpen(2),
+    Action::TabOpen(3),
+    Action::TabOpen(4),
+    Action::TabOpen(5),
+    Action::TabOpen(6),
+    Action::TabOpen(7),
+    Action::TabOpen(8),
+    Action::TabOpen(9),
     Action::Quit,
+    Action::QuitAll,
   ];
 
   /// Stable identifier used in the config file. It is also a valid command line.
@@ -165,7 +188,22 @@ impl Action {
       Action::Reload => "reload",
       Action::ToggleHelp => "toggle_help",
       Action::CommandLine => "command_line",
+      Action::TabNew => "tab_new",
+      Action::TabClose => "tab_close",
+      Action::TabNext => "tab_next",
+      Action::TabPrev => "tab_prev",
+      Action::TabRestore => "tab_restore",
+      Action::TabOpen(1) => "tab_open 1",
+      Action::TabOpen(2) => "tab_open 2",
+      Action::TabOpen(3) => "tab_open 3",
+      Action::TabOpen(4) => "tab_open 4",
+      Action::TabOpen(5) => "tab_open 5",
+      Action::TabOpen(6) => "tab_open 6",
+      Action::TabOpen(7) => "tab_open 7",
+      Action::TabOpen(8) => "tab_open 8",
+      Action::TabOpen(_) => "tab_open 9",
       Action::Quit => "quit",
+      Action::QuitAll => "quit_all",
     }
   }
 
@@ -221,7 +259,22 @@ impl Action {
       Action::Reload => "Reload directory",
       Action::ToggleHelp => "Toggle this help",
       Action::CommandLine => "Open the command line",
-      Action::Quit => "Quit",
+      Action::TabNew => "Open a new tab in this directory",
+      Action::TabClose => "Close this tab",
+      Action::TabNext => "Go to the next tab",
+      Action::TabPrev => "Go to the previous tab",
+      Action::TabRestore => "Reopen the last closed tab",
+      Action::TabOpen(1) => "Go to tab 1, opening it",
+      Action::TabOpen(2) => "Go to tab 2, opening it",
+      Action::TabOpen(3) => "Go to tab 3, opening it",
+      Action::TabOpen(4) => "Go to tab 4, opening it",
+      Action::TabOpen(5) => "Go to tab 5, opening it",
+      Action::TabOpen(6) => "Go to tab 6, opening it",
+      Action::TabOpen(7) => "Go to tab 7, opening it",
+      Action::TabOpen(8) => "Go to tab 8, opening it",
+      Action::TabOpen(_) => "Go to tab 9, opening it",
+      Action::Quit => "Close this tab, or quit when it is the only one",
+      Action::QuitAll => "Quit",
     }
   }
 }

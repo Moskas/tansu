@@ -215,7 +215,14 @@ cargo test
 | `R`                         | Reload directory              |
 | `?`                         | Toggle help overlay           |
 | `:`                         | Open the command line         |
-| `q`, `<C-c>`                | Quit                          |
+| `gn`, `<C-n>`               | New tab in this directory     |
+| `gc`, `<C-w>`               | Close this tab                |
+| `gt`, `<Tab>`               | Next tab                      |
+| `gT`, `<S-Tab>`             | Previous tab                  |
+| `<A-1>` .. `<A-9>`          | Go to tab 1-9, opening it     |
+| `uq`                        | Reopen the last closed tab    |
+| `q`                         | Close this tab, or quit       |
+| `Q`, `<C-c>`                | Quit                          |
 
 While a key sequence is unfinished, the status bar shows the keys typed so far (`y-`) and a
 popup above it lists the keys that can follow and what they do, like which-key in vim and
@@ -230,6 +237,28 @@ keeps the selected entry under the cursor and applies to every column.
 Files are opened with the configured opener (default `xdg-open`), detached from the
 terminal so tansu stays usable.
 
+## Tabs
+
+Tabs work like ranger's. Each tab has its own directory, selection and previous directory
+(`:cd -`); marks, the copy/cut buffer, the search and settings such as hidden files and the
+sort order are shared. Tabs are numbered 1 to 9 and the numbers can have gaps: `<A-5>` goes
+to tab 5, opening it on the current directory when it is not open. `gn` opens a tab with the
+lowest free number.
+
+With more than one tab open, the header lists them at its right end, taking at most half of
+it. Each tab shows its number, its directory's name and its activity: a spinner while a task
+started from the tab runs (`‖` when paused, `!` when it waits for an answer) and `+N` for
+entries marked in the tab's directory (`4 site ⠋+3`). The current tab is highlighted and also
+shows its task's progress (`5 src ⠋  62%`). As space runs out, the other tabs' names are cut
+short, then dropped (`4⠋+3`). Then the header shows only the tabs around the current one,
+between `‹` and `›`, with the current tab's position (`5/9`). Each arrow carries the activity
+of the tabs hidden on its side. Last, the current tab's label drops its percent and its name.
+Closing a tab hands its running tasks to the tab shown next.
+
+Closing a tab goes to the next one, or the previous one when it was the last. `q` (and `:q`)
+closes the tab and quits only when it is the only one; `Q`, `<C-c>` and `:qa` quit right away.
+`uq` reopens closed tabs, the last closed first. `:tab_open N` goes to tab `N`.
+
 ## Mouse
 
 Mouse input follows ranger:
@@ -242,6 +271,8 @@ Mouse input follows ranger:
 - The wheel moves the cursor three rows. Over the parent column it steps through the
   sibling directories of the current one. Over a file's preview it scrolls the preview
   instead (text and metadata; images do not scroll).
+- On the header, a click on a tab goes to that tab, a click on `‹` or `›` to the nearest tab
+  hidden on that side, and the wheel steps through tabs.
 
 A click closes the help overlay; the mouse is ignored while the command line is open. Set
 `mouse_enabled = false` to leave the mouse to the terminal.
@@ -407,7 +438,9 @@ or `<C-c>` cancels, and `<BS>` on an empty line closes it. Editing keys: `<Left>
 | `touch <name>`                     | Create an empty file, with missing parents           |
 | `mkdir`, `touch`                   | Open the command line as `mkdir ` or `touch `        |
 | `<action>`                         | Any action name below, e.g. `open`, `reload`, `quit` |
-| `q`                                | Quit                                                 |
+| `tab_open <n>`                     | Go to tab `n` (1 to 9), opening it                   |
+| `q`                                | Close this tab, or quit when it is the only one      |
+| `qa`, `quitall`                    | Quit                                                 |
 
 The selected path is appended as the last argument. Arguments are split on whitespace; there
 is no shell quoting or expansion. A foreground program (`:open_with nvim`, `:open_with less`)
@@ -446,12 +479,13 @@ shell. These macros are expanded first, each value shell-quoted:
 | `%p`       | Full paths of the marked entries, or of the selected one            |
 | `%d`       | The current directory                                               |
 | `%c`       | Full paths in the copy/cut buffer (`yy`, `dd`)                      |
-| `%D`, `%F` | Next tab's directory and file path; tansu has one tab, so this one  |
+| `%D`, `%F` | Next tab's directory and selected path (this tab when it is alone)  |
+| `%S`, `%P` | Full paths of the next tab's marked entries, or of its selected one |
 | `%%`       | A literal `%`                                                       |
 
-Other `%` sequences are kept as written (`date +%Y`), so write `%%d` for a literal `%d`. `%S`
-and `%P` work like `%p`. `%t` (tagged files in ranger) expands to nothing, and `%f` or `%F`
-without a selection is an error.
+Other `%` sequences are kept as written (`date +%Y`), so write `%%d` for a literal `%d`. With
+a single tab, `%S` and `%P` work like `%p`. `%t` (tagged files in ranger) expands to nothing,
+and `%f` or `%F` without a selection is an error.
 
 A first word starting with `-` holds flags; an uppercase flag cancels its lowercase one:
 
@@ -605,6 +639,7 @@ document = "reset"
 code = "reset"
 special = "yellow"
 marked = "lightyellow"    # marked entries, drawn bold
+tab_marks = "lightmagenta" # marked entries on a tab's label in the header
 # cursor_fg = "black"     # unset: selected rows use reverse video, like ranger
 # cursor_bg = "lightcyan"
 status_fg = "reset"
@@ -636,8 +671,8 @@ vcs_commit = "lightyellow"
 [keys]
 "J" = "half_page_down"
 "K" = "half_page_up"
-"<C-n>" = "move_down"
-"<C-p>" = "move_up"
+"<C-e>" = "move_down"
+"<C-y>" = "move_up"
 "<BS>" = "none"
 "ot" = "sort mtime"
 ```
@@ -648,7 +683,9 @@ Action names: `move_up`, `move_down`, `move_top`, `move_bottom`, `half_page_up`,
 `search`, `search_next`, `search_prev`, `clear_search`, `mark_matches`, `sort name`,
 `sort size`, `sort mtime`, `sort ctime`, `copy`, `cut`, `paste`, `paste_overwrite`, `delete`,
 `trash`, `mkdir`, `touch`, `extract`, `clear_buffer`, `yank_path`, `yank_dir`, `yank_name`,
-`yank_name_without_ext`, `yank_file`, `reload`, `toggle_help`, `command_line`, `quit`.
+`yank_name_without_ext`, `yank_file`, `reload`, `toggle_help`, `command_line`, `tab_new`,
+`tab_close`, `tab_next`, `tab_prev`, `tab_restore`, `tab_open 1` .. `tab_open 9`, `quit`,
+`quit_all`.
 ## Architecture
 
 Data flows one way: input event -> `Action` (via the keymap) -> `App` state update ->
