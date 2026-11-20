@@ -378,6 +378,17 @@ fn press_keys_without_pump(app: &mut App, keys: &str) {
   }
 }
 
+/// The queued commands, with the environment of shell commands left out (tested on its own).
+fn shell_commands(app: &mut App) -> Vec<Command> {
+  let mut cmds = app.take_commands();
+  for cmd in &mut cmds {
+    if let Command::Shell { env, .. } = cmd {
+      env.clear();
+    }
+  }
+  cmds
+}
+
 #[test]
 fn snapshot_main_layout() {
   let (_tmp, work) = fixture();
@@ -1492,12 +1503,13 @@ fn command_line_shell_queues_command_in_current_directory() {
   press(&mut app, ":shell -w wc -l %f");
   press_keys_without_pump(&mut app, "<Enter>");
   assert_eq!(
-    app.take_commands(),
+    shell_commands(&mut app),
     vec![Command::Shell {
       script: "wc -l 'file10.txt'".into(),
       cwd: work.clone(),
       mode: ShellMode::Foreground { wait_enter: true },
       program: "wc".into(),
+      env: Vec::new(),
     }]
   );
 
@@ -1520,12 +1532,13 @@ fn command_line_shell_queues_command_in_current_directory() {
   press(&mut app, ":shell -s touch new");
   press_keys_without_pump(&mut app, "<Enter>");
   assert_eq!(
-    app.take_commands(),
+    shell_commands(&mut app),
     vec![Command::Shell {
       script: "touch new".into(),
       cwd: work.join("beta"),
       mode: ShellMode::Silent,
       program: "touch".into(),
+      env: Vec::new(),
     }]
   );
 }
@@ -1568,12 +1581,13 @@ fn shell_c_macro_expands_to_the_copy_buffer() {
   press_keys_without_pump(&mut app, "<Enter>");
   let quoted = format!("'{}'", work.join("file2.txt").display());
   assert_eq!(
-    app.take_commands(),
+    shell_commands(&mut app),
     vec![Command::Shell {
       script: format!("cp {quoted} beta").into(),
       cwd: work.clone(),
       mode: ShellMode::Detached,
       program: "cp".into(),
+      env: Vec::new(),
     }]
   );
 }
@@ -2847,12 +2861,13 @@ fn uppercase_shell_macros_refer_to_the_next_tab() {
   press_keys_without_pump(&mut app, "<Enter>");
   let quote = |p: &Path| format!("'{}'", p.display());
   assert_eq!(
-    app.take_commands(),
+    shell_commands(&mut app),
     vec![Command::Shell {
       script: format!("cp 'alpha' {}", quote(&work.join("alpha"))).into(),
       cwd: work.clone(),
       mode: ShellMode::Foreground { wait_enter: false },
       program: "cp".into(),
+      env: Vec::new(),
     }]
   );
   // Marks in the next tab's directory are its selection.
@@ -2903,4 +2918,334 @@ fn chooser_lists_marks_from_every_directory_then_the_current_ones() {
     chosen.files,
     vec![work.join("alpha/a.txt"), work.join("file2.txt")]
   );
+}
+
+// ---- custom commands ----
+
+fn app_with_commands(start: &Path, commands: &str, keys: &[(&str, &str)]) -> App {
+  let mut config = Config::parse(commands).unwrap();
+  config.icons = false;
+  config.vcs_aware = false;
+  assert!(config.validate().is_empty());
+  let keys: Vec<(String, String)> = keys
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+  let (keymap, warnings) = Keymap::with_overrides(keys.iter().map(|(k, v)| (k, v)), |n| {
+    config.commands.contains_key(n)
+  });
+  assert!(warnings.is_empty(), "{warnings:?}");
+  let mut app = App::new(
+    config,
+    keymap,
+    start.to_path_buf(),
+    None,
+    "tester@box".to_string(),
+    None,
+  );
+  app.set_size(WIDTH, HEIGHT);
+  pump(&mut app);
+  app
+}
+
+#[test]
+fn keys_bound_to_command_lines_run_them() {
+  let (_tmp, work) = fixture();
+  let mut app = app_with_commands(&work, "", &[("gb", "cd beta"), ("gf", "cd ../alpha/b.txt")]);
+  press(&mut app, "gb");
+  assert_eq!(app.cwd, work.join("beta"));
+  // `cd` to a file selects it in its directory.
+  press(&mut app, "gf");
+  assert_eq!(app.cwd, work.join("alpha"));
+  assert_eq!(selected(&app), "b.txt");
+}
+
+#[test]
+fn custom_commands_run_their_lines_in_order_with_arguments() {
+  let (_tmp, work) = fixture();
+  let mut app = app_with_commands(
+    &work,
+    r#"
+    [commands]
+    into = { run = ["cd %a", "toggle_hidden"], description = "Enter and show dotfiles" }
+    broken = ["cd nowhere", "toggle_hidden"]
+    again = "again"
+    "#,
+    &[("gi", "into alpha")],
+  );
+  press(&mut app, ":into alpha<Enter>");
+  assert_eq!(app.cwd, work.join("alpha"));
+  assert!(app.show_hidden);
+
+  // A failing line stops the rest.
+  press(&mut app, ":broken<Enter>");
+  assert!(app.show_hidden);
+  assert!(
+    app
+      .message
+      .as_ref()
+      .unwrap()
+      .text
+      .contains("no such directory"),
+    "{:?}",
+    app.message
+  );
+
+  // A command running itself stops instead of looping.
+  press(&mut app, ":again<Enter>");
+  assert_eq!(
+    app.message.as_ref().unwrap().text,
+    "again: commands nested too deeply"
+  );
+
+  // Bindings show the command's description in the which-key and help popups.
+  press(&mut app, "g");
+  let shown = render_sized(&app, 100, HEIGHT).join("\n");
+  assert!(shown.contains("i : Enter and show dotfiles"), "{shown}");
+  press(&mut app, "<Esc>?");
+  let shown = render_sized(&app, 100, HEIGHT).join("\n");
+  assert!(shown.contains("gi"), "{shown}");
+  assert!(shown.contains("Enter and show dotfiles"), "{shown}");
+}
+
+#[test]
+fn shell_commands_get_tansu_state_in_their_environment() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj<Space><Space>"); // file2.txt and file10.txt marked, blob.bin selected
+  press(&mut app, ":shell true");
+  press_keys_without_pump(&mut app, "<Enter>");
+  let Some(Command::Shell { env, .. }) = app.take_commands().pop() else {
+    panic!("not a shell command");
+  };
+  let get = |name: &str| {
+    env
+      .iter()
+      .find(|(k, _)| k == name)
+      .map(|(_, v)| v.to_str().unwrap().to_string())
+  };
+  assert_eq!(get("TANSU_DIR"), Some(work.display().to_string()));
+  let marked = [work.join("file2.txt"), work.join("file10.txt")];
+  let mut selection: Vec<String> = get("TANSU_SELECTION")
+    .unwrap()
+    .lines()
+    .map(str::to_string)
+    .collect();
+  selection.sort();
+  let mut expected: Vec<String> = marked.iter().map(|p| p.display().to_string()).collect();
+  expected.sort();
+  assert_eq!(selection, expected);
+  assert_eq!(
+    get("TANSU_SELECTED"),
+    Some(work.join(selected(&app)).display().to_string())
+  );
+}
+
+#[test]
+fn lines_written_by_a_shell_command_run_when_it_exits() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  app.handle_event(Event::ProgramExited {
+    program: "sh".into(),
+    result: Err("failed".into()),
+    commands: Ok(vec!["cd alpha".into(), "toggle_hidden".into()]),
+  });
+  pump(&mut app);
+  assert_eq!(app.cwd, work.join("alpha"));
+  assert!(app.show_hidden);
+  app.handle_event(Event::DetachedExited {
+    commands: Ok(vec!["cd ..".into()]),
+  });
+  pump(&mut app);
+  assert_eq!(app.cwd, work);
+}
+
+// ---- shell tasks ----
+
+#[test]
+fn shell_b_starts_a_task_and_its_log_opens_from_the_popup() {
+  use tansu::jobs::JobKind;
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, ":shell -b make all");
+  press_keys_without_pump(&mut app, "<Enter>");
+  let job = app.jobs.list[0].id;
+  assert_eq!(app.jobs.list[0].kind, JobKind::Shell);
+  assert_eq!(app.jobs.list[0].what, "make all");
+  let cmds = app.take_commands();
+  assert!(
+    matches!(&cmds[..], [Command::ShellTask { job: j, program, .. }] if *j == job && program == "make"),
+    "{cmds:?}"
+  );
+
+  let log = work.join("task.log");
+  app.handle_event(Event::ShellTaskStarted {
+    job,
+    log: log.clone(),
+  });
+  app.handle_event(Event::JobProgress {
+    job,
+    progress: tansu::jobs::Progress {
+      current: "compiling foo.c".into(),
+      ..Default::default()
+    },
+  });
+  press(&mut app, "w");
+  assert!(app.tasks_visible());
+  let shown = render_sized(&app, 100, HEIGHT).join("\n");
+  assert!(shown.contains("Running"), "{shown}");
+  assert!(shown.contains("make all"), "{shown}");
+  assert!(shown.contains("compiling foo.c"), "{shown}");
+  assert!(shown.contains("l log"), "{shown}");
+  press_keys_without_pump(&mut app, "l");
+  assert_eq!(
+    app.take_commands(),
+    vec![Command::Spawn {
+      argv: vec!["less".into(), "+F".into()],
+      path: log,
+      foreground: true,
+    }]
+  );
+  // `x` cancels it through the runtime.
+  press_keys_without_pump(&mut app, "x");
+  assert_eq!(app.take_commands(), vec![Command::CancelJob(job)]);
+}
+
+#[test]
+fn finished_shell_tasks_report_keep_their_log_and_run_their_commands() {
+  use std::os::unix::process::ExitStatusExt;
+  use std::process::ExitStatus;
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, ":tasklog<Enter>");
+  assert_eq!(
+    app.message.as_ref().unwrap().text,
+    "tasklog: no finished task logs"
+  );
+
+  for (n, status) in [(1, 0), (2, 2 << 8)] {
+    press(&mut app, &format!(":shell -b job{n}"));
+    press_keys_without_pump(&mut app, "<Enter>");
+    app.take_commands();
+    let job = app.jobs.list[0].id;
+    app.handle_event(Event::ShellTaskStarted {
+      job,
+      log: work.join(format!("job{n}.log")),
+    });
+    app.handle_event(Event::JobProgress {
+      job,
+      progress: tansu::jobs::Progress {
+        current: format!("last of {n}"),
+        ..Default::default()
+      },
+    });
+    app.handle_event(Event::ShellTaskDone {
+      job,
+      result: Ok(ExitStatus::from_raw(status)),
+      commands: Ok(vec!["cd alpha".into()]),
+    });
+    pump(&mut app);
+  }
+  assert!(app.jobs.list.is_empty());
+  assert_eq!(app.cwd, work.join("alpha"), "the command lines ran");
+  assert_eq!(app.jobs.finished_logs.len(), 2);
+  assert!(app.jobs.finished_logs[0].ok);
+  assert!(!app.jobs.finished_logs[1].ok);
+
+  press(&mut app, ":tasklog 3<Enter>");
+  assert_eq!(
+    app.message.as_ref().unwrap().text,
+    "tasklog: only 2 logs kept"
+  );
+  press(&mut app, ":tasklog 2");
+  press_keys_without_pump(&mut app, "<Enter>");
+  assert_eq!(
+    app.take_commands(),
+    vec![Command::Spawn {
+      argv: vec!["less".into()],
+      path: work.join("job1.log"),
+      foreground: true,
+    }]
+  );
+}
+
+#[test]
+fn a_failed_shell_task_reports_its_last_line() {
+  use std::os::unix::process::ExitStatusExt;
+  use std::process::ExitStatus;
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, ":shell -b false");
+  press_keys_without_pump(&mut app, "<Enter>");
+  let job = app.jobs.list[0].id;
+  app.handle_event(Event::JobProgress {
+    job,
+    progress: tansu::jobs::Progress {
+      current: "error: disk full".into(),
+      ..Default::default()
+    },
+  });
+  app.handle_event(Event::ShellTaskDone {
+    job,
+    result: Ok(ExitStatus::from_raw(1 << 8)),
+    commands: Ok(Vec::new()),
+  });
+  assert_eq!(
+    app.message.as_ref().unwrap().text,
+    "`false` exited with status 1: error: disk full"
+  );
+}
+
+#[test]
+fn a_toast_wider_than_the_screen_is_cut_to_fit() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  app
+    .jobs
+    .toast(true, "Finished".into(), "x".repeat(500), "in 0:05".into());
+  // Too narrow for the title, but it must still draw.
+  render_sized(&app, 12, HEIGHT);
+  for width in [40, WIDTH] {
+    let shown = render_sized(&app, width, HEIGHT).join("\n");
+    assert!(shown.contains("Finished"), "{width}: {shown}");
+  }
+}
+
+#[test]
+fn the_command_line_recalls_earlier_lines_with_up_and_down() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(
+    &mut app,
+    ":cd alpha<Enter>:cd ..<Enter>:toggle_hidden<Enter>",
+  );
+  assert_eq!(
+    app.history.entries(),
+    ["cd alpha", "cd ..", "toggle_hidden"]
+  );
+  press(&mut app, ":<Up>");
+  assert_eq!(console_input(&app), "toggle_hidden");
+  press(&mut app, "<Up><C-p>");
+  assert_eq!(console_input(&app), "cd alpha");
+  press(&mut app, "<Down>");
+  assert_eq!(console_input(&app), "cd ..");
+  press(&mut app, "<C-n><Down>");
+  assert_eq!(console_input(&app), "");
+  // What was typed picks the lines.
+  press(&mut app, "cd<Up>");
+  assert_eq!(console_input(&app), "cd ..");
+  press(&mut app, "<Up>");
+  assert_eq!(console_input(&app), "cd alpha");
+  // Running a recalled line moves it to the end.
+  press(&mut app, "<Enter>");
+  assert_eq!(app.cwd, work.join("alpha"));
+  assert_eq!(
+    app.history.entries(),
+    ["cd ..", "toggle_hidden", "cd alpha"]
+  );
+  // Prompts opened with a key start from their prefix, like `/` for search.
+  press(&mut app, "cd<Up>");
+  assert_eq!(console_input(&app), "cd alpha");
+  press(&mut app, "<Esc>");
+  assert!(app.console.is_none());
 }

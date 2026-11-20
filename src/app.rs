@@ -15,14 +15,14 @@ use ratatui::layout::Position;
 
 use crate::action::Action;
 use crate::clipboard;
-use crate::config::Config;
-use crate::console::{self, CompletionSource, ConsoleCommand, EditOutcome, LineEditor};
+use crate::config::{Config, UserCommand};
+use crate::console::{self, CompletionSource, ConsoleCommand, EditOutcome, History, LineEditor};
 use crate::event::Event;
 use crate::fs::ops::{Conflict, OnConflict, Resolution};
 use crate::fs::sort::sort_entries_by;
 use crate::fs::{DirCount, DirListing, Entry, PasteMode, SortKey};
 use crate::graphics::EncodedImage;
-use crate::jobs::{ConflictPrompt, JobId, JobKind, Jobs, PasteRequest, Progress};
+use crate::jobs::{ConflictPrompt, FinishedLog, JobId, JobKind, Jobs, PasteRequest, Progress};
 use crate::keymap::{Key, KeyResult, Keymap};
 use crate::nav::{Cursor, ScrollPos, passive_offset};
 use crate::preview::{Preview, PreviewLimits};
@@ -41,6 +41,9 @@ const NO_SEARCH: &str = "no active search; press / to search first";
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Most bytes a text preview reads after being extended by scrolling.
 const EXTENDED_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// How deeply custom commands may run one another, so a command that runs itself stops.
+const MAX_COMMAND_DEPTH: usize = 8;
 
 /// The entry drawn on `row` of a parent or preview column `height` rows tall, scrolled the
 /// way the renderer scrolls it.
@@ -124,13 +127,27 @@ pub enum Command {
   },
   /// Put this on the system clipboard.
   Clipboard(clipboard::Content),
-  /// Run `script` with the user's shell in `cwd`. `program` names it in messages.
+  /// Run `script` with the user's shell in `cwd`, with `env` added to its environment.
+  /// `program` names it in messages. The command lines it writes into `$TANSU_CMD` are run
+  /// once it exits.
   Shell {
     script: OsString,
     cwd: PathBuf,
     mode: ShellMode,
     program: String,
+    env: Vec<(OsString, OsString)>,
   },
+  /// Run `script` as a shell task (`:shell -b`): in the background, with its output in a
+  /// log, reported as the task `job`.
+  ShellTask {
+    job: JobId,
+    script: OsString,
+    cwd: PathBuf,
+    program: String,
+    env: Vec<(OsString, OsString)>,
+  },
+  /// Delete a shell task's log that is no longer kept.
+  RemoveLog(PathBuf),
   /// Record a visit to this directory in the zoxide database.
   ZoxideAdd(PathBuf),
   /// Look up the best zoxide match for `keywords`, other than `exclude`.
@@ -374,6 +391,8 @@ pub struct App {
   pub show_help: bool,
   /// The `:` command line, while it is open.
   pub console: Option<LineEditor>,
+  /// Lines run from the command line, recalled with `<Up>` and `<Down>`.
+  pub history: History,
   /// A deletion waiting for confirmation; the next key answers it.
   pub confirm: Option<Confirm>,
   /// The trash `dT` moves entries into (`$XDG_DATA_HOME/Trash`). `None` refuses to trash.
@@ -436,6 +455,8 @@ pub struct App {
   /// Closed tabs, the last closed at the end, for `uq`.
   closed_tabs: Vec<Tab>,
   commands: Vec<Command>,
+  /// How many custom commands are running, one inside another.
+  command_depth: usize,
 }
 
 impl App {
@@ -460,6 +481,7 @@ impl App {
       cwd_symlinks: HashSet::new(),
       show_help: false,
       console: None,
+      history: History::default(),
       confirm: None,
       trash_dir: None,
       completion: None,
@@ -496,6 +518,7 @@ impl App {
       tabs: std::collections::BTreeMap::new(),
       closed_tabs: Vec::new(),
       commands: Vec::new(),
+      command_depth: 0,
     };
     app.enter_dir(start, select);
     app
@@ -754,6 +777,19 @@ impl App {
       Event::Counts(counts) => self.counts.extend(counts),
       Event::Renamed { from, to, result } => self.on_renamed(from, to, result),
       Event::JobProgress { job, progress } => self.on_job_progress(job, progress),
+      Event::ShellTaskStarted { job, log } => {
+        if let Some(j) = self.jobs.get_mut(job) {
+          j.started.get_or_insert_with(Instant::now);
+          j.log = Some(log);
+        } else {
+          self.commands.push(Command::RemoveLog(log));
+        }
+      }
+      Event::ShellTaskDone {
+        job,
+        result,
+        commands,
+      } => self.on_shell_task_done(job, result, commands),
       Event::PasteConflicts { job, conflicts } => self.on_conflicts(job, conflicts),
       Event::Pasted {
         job,
@@ -792,10 +828,15 @@ impl App {
           self.set_error(e);
         }
       }
-      Event::ProgramExited { program, result } => self.on_foreground_exit(&program, result),
-      Event::DetachedExited => {
+      Event::ProgramExited {
+        program,
+        result,
+        commands,
+      } => self.on_foreground_exit(&program, result, commands),
+      Event::DetachedExited { commands } => {
         let cwd = self.cwd.clone();
         self.request_dir(&cwd, true);
+        self.run_script_commands(commands);
       }
       Event::Zoxide(result) => match result {
         Ok(path) => self.go_to(path, console::Z),
@@ -836,13 +877,17 @@ impl App {
         self.complete_command_line(forward);
         return;
       }
+      if self.step_history(key) {
+        return;
+      }
     }
     if let Some(editor) = &mut self.console {
       let searching = editor.input().split_whitespace().next() == Some(console::SEARCH);
       match editor.handle_key(key) {
-        EditOutcome::Continue => {}
+        EditOutcome::Continue => self.history.reset(),
         EditOutcome::Cancel => {
           self.console = None;
+          self.history.reset();
           // Backing out of a search ends the previous one too, so `n` does not revive it.
           if searching {
             self.clear_search();
@@ -850,6 +895,7 @@ impl App {
         }
         EditOutcome::Submit(line) => {
           self.console = None;
+          self.history.push(&line);
           self.run_command_line(&line);
         }
       }
@@ -860,8 +906,13 @@ impl App {
       self.tasks_key(key);
       return;
     }
-    if let KeyResult::Action(action) = self.keymap.feed(key) {
-      self.dispatch(action);
+    match self.keymap.feed(key) {
+      KeyResult::Action(action) => self.dispatch(action),
+      KeyResult::Line(line) => {
+        self.message = None;
+        self.run_command_line(&line);
+      }
+      KeyResult::Pending | KeyResult::Unbound => {}
     }
   }
 
@@ -1050,8 +1101,15 @@ impl App {
     }
   }
 
-  /// Parses and runs a line typed into the command line.
+  /// Parses and runs a line typed into the command line, a custom command from the config
+  /// included.
   pub fn run_command_line(&mut self, line: &str) {
+    let (name, args) = console::split_command(line);
+    if let Some(cmd) = self.config.commands.get(name) {
+      let (name, args, cmd) = (name.to_string(), args.to_string(), cmd.clone());
+      self.run_user_command(&name, &args, &cmd);
+      return;
+    }
     match console::parse(line) {
       None => {}
       Some(Err(e)) => self.set_error(e.to_string()),
@@ -1063,7 +1121,58 @@ impl App {
       Some(Ok(ConsoleCommand::Shell { flags, command })) => self.shell(&flags, &command),
       Some(Ok(ConsoleCommand::Search(pattern))) => self.start_search(pattern),
       Some(Ok(ConsoleCommand::Create { name, dir })) => self.create(&name, dir),
+      Some(Ok(ConsoleCommand::TaskLog(n))) => self.task_log(n),
     }
+  }
+
+  /// Runs a custom command's lines in order, with `%a` standing for `args`. A line that
+  /// fails right away (an error in the status line) stops the rest.
+  fn run_user_command(&mut self, name: &str, args: &str, cmd: &UserCommand) {
+    if self.command_depth >= MAX_COMMAND_DEPTH {
+      self.set_error(format!("{name}: commands nested too deeply"));
+      return;
+    }
+    self.command_depth += 1;
+    for line in &cmd.run {
+      if line.trim().is_empty() {
+        continue;
+      }
+      // Only an error from this line stops the rest.
+      self.message = None;
+      self.run_command_line(&console::expand_args(line, args));
+      if self
+        .message
+        .as_ref()
+        .is_some_and(|m| m.level == MessageLevel::Error)
+      {
+        break;
+      }
+    }
+    self.command_depth -= 1;
+  }
+
+  /// Runs the command lines a shell command wrote into `$TANSU_CMD`, in order.
+  fn run_script_commands(&mut self, commands: Result<Vec<String>, String>) {
+    match commands {
+      Ok(lines) => {
+        for line in lines {
+          self.run_command_line(&line);
+        }
+      }
+      Err(e) => self.set_error(e),
+    }
+  }
+
+  /// What a binding to `line` does, for the help and which-key popups: the custom command's
+  /// description when it has one, otherwise the line itself.
+  pub fn line_description(&self, line: &str) -> String {
+    let (name, _) = console::split_command(line);
+    self
+      .config
+      .commands
+      .get(name)
+      .and_then(|c| c.description.clone())
+      .unwrap_or_else(|| line.to_string())
   }
 
   /// `:shell [-flags] command`: expands the macros and runs the command in the current
@@ -1109,12 +1218,46 @@ impl App {
     if matches!(flags.mode, ShellMode::Detached | ShellMode::Terminal) {
       self.set_info(format!("running {program}"));
     }
+    let env = self.shell_env(selected.as_deref(), &selection);
+    if flags.mode == ShellMode::Task {
+      let what = crate::fs::entry::sanitize(command.trim());
+      let job = self.jobs.add(JobKind::Shell, what, None, self.current_tab);
+      self.commands.push(Command::ShellTask {
+        job,
+        script,
+        cwd: self.cwd.clone(),
+        program,
+        env,
+      });
+      return;
+    }
     self.commands.push(Command::Shell {
       script,
       cwd: self.cwd.clone(),
       mode: flags.mode,
       program,
+      env,
     });
+  }
+
+  /// What a shell command learns about tansu from its environment, besides `TANSU_CMD` and
+  /// `TANSU_LEVEL`, which are added when it is run.
+  fn shell_env(&self, selected: Option<&Path>, selection: &[PathBuf]) -> Vec<(OsString, OsString)> {
+    let mut joined = OsString::new();
+    for (i, path) in selection.iter().enumerate() {
+      if i > 0 {
+        joined.push("\n");
+      }
+      joined.push(path);
+    }
+    let mut env = vec![
+      ("TANSU_DIR".into(), self.cwd.clone().into_os_string()),
+      ("TANSU_SELECTION".into(), joined),
+    ];
+    if let Some(selected) = selected {
+      env.push(("TANSU_SELECTED".into(), selected.as_os_str().to_os_string()));
+    }
+    env
   }
 
   /// Opens the command line as `command `, ready for its argument.
@@ -1265,6 +1408,33 @@ impl App {
     }
   }
 
+  /// `<Up>`/`<C-p>` and `<Down>`/`<C-n>` in the command line: steps through the lines run
+  /// before that start with what was typed. Returns whether the key was one of those.
+  fn step_history(&mut self, key: Key) -> bool {
+    let ctrl = key.mods == KeyModifiers::CONTROL;
+    let older = match key.code {
+      KeyCode::Up if key.mods.is_empty() => true,
+      KeyCode::Char('p') if ctrl => true,
+      KeyCode::Down if key.mods.is_empty() => false,
+      KeyCode::Char('n') if ctrl => false,
+      _ => return false,
+    };
+    let Some(editor) = &mut self.console else {
+      return false;
+    };
+    let current = editor.input().to_string();
+    let line = if older {
+      self.history.older(&current)
+    } else {
+      self.history.newer(&current)
+    };
+    if let Some(line) = line {
+      editor.set_input(line);
+      self.completion = None;
+    }
+    true
+  }
+
   /// Tab (`forward`) or Shift-Tab in the command line. When several candidates match,
   /// pressing it again cycles through them, like ranger.
   fn complete_command_line(&mut self, forward: bool) {
@@ -1292,11 +1462,14 @@ impl App {
           .map(|e| e.name.clone())
           .collect()
       };
+      let user_commands: Vec<&str> = self.config.commands.keys().map(String::as_str).collect();
       let src = CompletionSource {
         selected: self.selected().map(|e| e.name.as_str()),
         programs: &programs,
         subdirs: &subdirs,
         files: &files,
+        user_commands: &user_commands,
+        task_logs: self.jobs.finished_logs.len(),
       };
       let lines = console::completions(&input, &src);
       if lines.is_empty() {
@@ -1529,6 +1702,80 @@ impl App {
     }
   }
 
+  /// A shell task (`:shell -b`) exited: its log is kept for `:tasklog`, the directory is
+  /// listed again and the command lines it wrote are run.
+  pub fn on_shell_task_done(
+    &mut self,
+    job: JobId,
+    result: Result<ExitStatus, String>,
+    commands: Result<Vec<String>, String>,
+  ) {
+    let Some(finished) = self.jobs.remove(job) else {
+      return;
+    };
+    let what = finished.what.clone();
+    let last = &finished.progress.current;
+    let ok = matches!(&result, Ok(status) if status.success());
+    if finished.cancelled {
+      self.set_info(format!("cancelled `{what}`"));
+    } else {
+      let failure = match &result {
+        Ok(status) if status.success() => None,
+        Ok(status) => Some(match status.code() {
+          Some(code) => format!("exited with status {code}"),
+          None => format!("was terminated ({status})"),
+        }),
+        Err(e) => Some(e.clone()),
+      };
+      match failure {
+        None => self.set_info(format!("finished `{what}`")),
+        Some(why) if last.is_empty() => self.set_error(format!("`{what}` {why}")),
+        Some(why) => self.set_error(format!("`{what}` {why}: {last}")),
+      }
+    }
+    if let Some(log) = finished.log.clone() {
+      for old in self.jobs.keep_log(FinishedLog { what, log, ok }) {
+        self.commands.push(Command::RemoveLog(old));
+      }
+    }
+    self.job_finished(Some(finished));
+    let cwd = self.cwd.clone();
+    self.request_dir(&cwd, true);
+    self.run_script_commands(commands);
+  }
+
+  /// Opens a shell task's log in `less`, following new output while `follow`.
+  fn view_log(&mut self, log: PathBuf, follow: bool) {
+    let mut argv = vec!["less".to_string()];
+    if follow {
+      argv.push("+F".to_string());
+    }
+    self.commands.push(Command::Spawn {
+      argv,
+      path: log,
+      foreground: true,
+    });
+  }
+
+  /// `:tasklog [n]`: the log of the `n`-th most recently finished shell task.
+  fn task_log(&mut self, n: usize) {
+    let logs = &self.jobs.finished_logs;
+    if logs.is_empty() {
+      self.set_error("tasklog: no finished task logs");
+      return;
+    }
+    match logs.len().checked_sub(n).and_then(|i| logs.get(i)) {
+      Some(entry) => {
+        let log = entry.log.clone();
+        self.view_log(log, false);
+      }
+      None => self.set_error(format!(
+        "tasklog: only {} logs kept",
+        self.jobs.finished_logs.len()
+      )),
+    }
+  }
+
   /// Whether the task popup is up, and takes the keys.
   pub fn tasks_visible(&self) -> bool {
     self.console.is_none()
@@ -1615,6 +1862,11 @@ impl App {
           j.cancelled = true;
           let id = j.id;
           self.commands.push(Command::CancelJob(id));
+        }
+      }
+      KeyCode::Char('l') => {
+        if let Some(log) = self.jobs.selected_job().and_then(|j| j.log.clone()) {
+          self.view_log(log, true);
         }
       }
       _ => {}
@@ -2136,7 +2388,12 @@ impl App {
 
   /// Called after a foreground program returned the terminal, or a silent shell command
   /// finished. The program may have changed files, so the current directory is listed again.
-  pub fn on_foreground_exit(&mut self, program: &str, result: Result<ExitStatus, String>) {
+  pub fn on_foreground_exit(
+    &mut self,
+    program: &str,
+    result: Result<ExitStatus, String>,
+    commands: Result<Vec<String>, String>,
+  ) {
     match result {
       Ok(status) if status.success() => {}
       Ok(status) => match status.code() {
@@ -2147,6 +2404,7 @@ impl App {
     }
     let cwd = self.cwd.clone();
     self.request_dir(&cwd, true);
+    self.run_script_commands(commands);
   }
 
   pub fn set_size(&mut self, width: u16, height: u16) {

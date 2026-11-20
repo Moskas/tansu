@@ -5,6 +5,13 @@ or `<C-c>` cancels, and `<BS>` on an empty line closes it. Editing keys: `<Left>
 `<Home>`/`<End>` (also `<C-a>`/`<C-e>`), `<Del>`, `<C-w>` (delete word), `<C-u>`/`<C-k>`
 (delete to start / end).
 
+`<Up>` and `<Down>` (also `<C-p>` and `<C-n>`) step through the lines run before, newest first.
+Only lines starting with what was typed are visited, so `cd<Up>` recalls the last `cd`;
+stepping past the newest line brings back what was typed. A line run again moves to the
+end instead of being kept twice. The last 100 lines are kept in
+`$XDG_DATA_HOME/tansu/history` across sessions; `save_console_history = false` keeps them
+for the session only. Lines run from key bindings and scripts are not recorded.
+
 | Command                            | Effect                                               |
 |------------------------------------|------------------------------------------------------|
 | `cd [path]`                        | Change directory; no path goes home, `-` goes back   |
@@ -22,6 +29,7 @@ or `<C-c>` cancels, and `<BS>` on an empty line closes it. Editing keys: `<Left>
 | `mkdir`, `touch`                   | Open the command line as `mkdir ` or `touch `        |
 | `<action>`                         | Any action name below, e.g. `open`, `reload`, `quit` |
 | `tab_open <n>`                     | Go to tab `n` (1 to 9), opening it                   |
+| `tasklog [n]`                      | Show the log of a finished `shell -b` task in `less` |
 | `q`                                | Close this tab, or quit when it is the only one      |
 | `qa`, `quitall`                    | Quit                                                 |
 
@@ -78,9 +86,14 @@ A first word starting with `-` holds flags; an uppercase flag cancels its lowerc
 | `-w` | Same, then wait for `<Enter>` so the output can be read                       |
 | `-p` | Show stdout and stderr in `less`                                              |
 | `-s` | Run in the background with output discarded; a non-zero exit is reported      |
+| `-b` | Run in the background as a task, with its output kept in a log                |
 | `-f` | Run detached with output discarded; the directory is reloaded when it exits   |
 | `-t` | Run in a new terminal window (`$TERMCMD`, else `$TERM` or `xterm`)            |
 | `-r` | Run through `sudo` on the terminal (`sudo -b` with `-f`)                      |
+
+`-b` shows the command in the task popup, where its output can be followed; see
+[Shell tasks](file-operations.md#shell-tasks). It gives way to `-t`, `-p` and `-r`: with `-r`
+the command runs on the terminal, since `sudo` may ask for a password.
 
 Examples: `:shell -w make`, `:shell -p git log -- %f`, `:shell -f chmod +x %s`,
 `:shell $SHELL` (a subshell in the current directory). `!` and `s` open the command line as
@@ -107,3 +120,6 @@ backward. Commands that take an argument complete with a trailing space, so the 
 goes on to the argument.
 
 Every action from [Configuration](configuration.md#action-names) can be run as a command.
+
+Custom commands from the `[commands]` table run the same way, and shell commands can send
+command lines back to tansu; see [Custom commands](commands.md).

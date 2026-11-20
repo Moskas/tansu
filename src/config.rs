@@ -43,12 +43,76 @@ pub struct Config {
   /// takes over the terminal's own text selection, which then needs a modifier (usually
   /// Shift).
   pub mouse_enabled: bool,
+  /// Keep the command-line history across sessions in `$XDG_DATA_HOME/tansu/history` (like
+  /// ranger's `save_console_history`).
+  pub save_console_history: bool,
   pub preview: PreviewLimits,
   /// Syntax highlighting of text previews through `bat`.
   pub highlight: HighlightConfig,
   pub theme: Theme,
-  /// Key notation to action name, e.g. `"J" = "half_page_down"`. `"none"` unbinds.
+  /// Key notation to an action name or a command line, e.g. `"J" = "half_page_down"` or
+  /// `"ge" = "shell -w nvim %s"`. `"none"` unbinds.
   pub keys: BTreeMap<String, String>,
+  /// Custom commands, by name: command lines run in order, like ranger's `commands.py`.
+  pub commands: BTreeMap<String, UserCommand>,
+}
+
+/// A custom command from `[commands]`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(from = "UserCommandRepr")]
+pub struct UserCommand {
+  /// Command lines, run in order. `%a` in them stands for the arguments typed after the
+  /// command's name.
+  pub run: Vec<String>,
+  /// Shown in the help and which-key popups instead of the command line.
+  pub description: Option<String>,
+}
+
+/// The forms a custom command can be written in: one line, a list of lines, or a table with
+/// `run` and `description`.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum UserCommandRepr {
+  Lines(Lines),
+  Table(UserCommandTable),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UserCommandTable {
+  run: Lines,
+  description: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Lines {
+  One(String),
+  Many(Vec<String>),
+}
+
+impl From<Lines> for Vec<String> {
+  fn from(lines: Lines) -> Self {
+    match lines {
+      Lines::One(line) => vec![line],
+      Lines::Many(lines) => lines,
+    }
+  }
+}
+
+impl From<UserCommandRepr> for UserCommand {
+  fn from(repr: UserCommandRepr) -> Self {
+    match repr {
+      UserCommandRepr::Lines(lines) => UserCommand {
+        run: lines.into(),
+        description: None,
+      },
+      UserCommandRepr::Table(t) => UserCommand {
+        run: t.run.into(),
+        description: t.description,
+      },
+    }
+  }
 }
 
 impl Default for Config {
@@ -66,10 +130,12 @@ impl Default for Config {
       preview_images: true,
       which_key: true,
       mouse_enabled: true,
+      save_console_history: true,
       preview: PreviewLimits::default(),
       highlight: HighlightConfig::default(),
       theme: Theme::default(),
       keys: BTreeMap::new(),
+      commands: BTreeMap::new(),
     }
   }
 }
@@ -136,6 +202,19 @@ impl Config {
     p.max_bytes = p.max_bytes.clamp(1024, 16 * 1024 * 1024);
     p.max_lines = p.max_lines.max(1);
     p.max_entries = p.max_entries.max(1);
+    self.commands.retain(|name, cmd| {
+      let problem = if name.is_empty() || name.contains(char::is_whitespace) {
+        "a name cannot be empty or contain spaces"
+      } else if crate::console::is_builtin(name) {
+        "a built-in command has this name"
+      } else if cmd.run.iter().all(|l| l.trim().is_empty()) {
+        "nothing to run"
+      } else {
+        return true;
+      };
+      warnings.push(format!("config: commands: `{name}`: {problem}"));
+      false
+    });
     warnings
   }
 }

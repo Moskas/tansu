@@ -601,6 +601,31 @@ impl Runtime {
           control.set_paused(paused);
         }
       }
+      Command::ShellTask {
+        job,
+        script,
+        cwd,
+        program,
+        env,
+      } => {
+        self.controls.retain(|_, c| Arc::strong_count(c) > 1);
+        let control = Arc::new(Control::default());
+        self.controls.insert(job, Arc::clone(&control));
+        let tx = self.tx.clone();
+        let spawned = thread::Builder::new()
+          .name("shell-task".into())
+          .spawn(move || {
+            run_shell_task(job, &script, &cwd, &program, &env, &control, &mut |ev| {
+              let _ = tx.send(ev);
+            });
+          });
+        if let Err(e) = spawned {
+          return Some(format!("shell: could not start task: {e}"));
+        }
+      }
+      Command::RemoveLog(path) => {
+        let _ = std::fs::remove_file(path);
+      }
       Command::LoadDir(path) => {
         let tx = self.tx.clone();
         let spawned = thread::Builder::new().name("list".into()).spawn(move || {
@@ -650,31 +675,44 @@ impl Runtime {
         cwd,
         mode,
         program,
+        env,
       } => {
         let result = match mode {
           ShellMode::Silent => {
             let tx = self.tx.clone();
             let spawned = thread::Builder::new().name("shell".into()).spawn(move || {
-              let result =
-                crate::opener::run_shell_silent(&script, &cwd).map_err(|e| e.to_string());
-              let _ = tx.send(Event::ProgramExited { program, result });
+              let (result, commands) = crate::opener::with_command_file(&env, |env| {
+                crate::opener::run_shell_silent(&script, &cwd, env).map_err(|e| e.to_string())
+              });
+              let _ = tx.send(Event::ProgramExited {
+                program,
+                result,
+                commands,
+              });
             });
             spawned
               .map(drop)
               .map_err(|e| format!("shell: could not start command: {e}"))
           }
-          // Detached commands report nothing, but the listing is refreshed once they exit.
-          ShellMode::Terminal => {
-            let tx = self.tx.clone();
-            let on_exit = move || drop(tx.send(Event::DetachedExited));
-            crate::opener::spawn_shell_in_terminal(&script, &cwd, on_exit)
-              .map_err(|e| e.to_string())
-          }
-          // Modes that need the terminal are run by the main loop; anything else is detached.
+          // Detached commands (`-f`, and `-t` in a new terminal window) report nothing, but
+          // once they exit the listing is refreshed and the command lines they wrote are run.
+          // Modes that need the terminal are run by the main loop.
           _ => {
             let tx = self.tx.clone();
-            let on_exit = move || drop(tx.send(Event::DetachedExited));
-            crate::opener::spawn_shell_detached(&script, &cwd, on_exit).map_err(|e| e.to_string())
+            let (env, file) = match crate::opener::CommandFile::create() {
+              Ok(file) => (file.env(&env), Some(file)),
+              Err(_) => (env, None),
+            };
+            let on_exit = move || {
+              let commands = file.map_or(Ok(Vec::new()), crate::opener::CommandFile::take_lines);
+              drop(tx.send(Event::DetachedExited { commands }));
+            };
+            let spawned = if mode == ShellMode::Terminal {
+              crate::opener::spawn_shell_in_terminal(&script, &cwd, &env, on_exit)
+            } else {
+              crate::opener::spawn_shell_detached(&script, &cwd, &env, on_exit)
+            };
+            spawned.map_err(|e| e.to_string())
           }
         };
         if let Err(e) = result {
@@ -722,8 +760,129 @@ impl Runtime {
   }
 }
 
-/// Runs a command to completion on the current thread. `Open`, `Spawn`, `Shell`, `ZoxideAdd`
-/// and `Clipboard` are ignored, so tests never touch the user's programs, zoxide database or
+/// How often a shell task is checked for output, exit, pause and cancel.
+const SHELL_TASK_POLL: Duration = Duration::from_millis(250);
+/// How long a cancelled shell task gets after SIGTERM before SIGKILL.
+const SHELL_TASK_KILL_AFTER: Duration = Duration::from_secs(3);
+/// Bytes read from the end of a task's log to find its last line.
+const SHELL_TASK_TAIL: u64 = 4096;
+
+/// Runs a shell task (`:shell -b`) until it exits: its output goes into a new log, the last
+/// line of which is reported as its progress. Pausing stops its process group and resuming
+/// continues it; cancelling sends SIGTERM, then SIGKILL if it does not exit.
+pub fn run_shell_task(
+  job: JobId,
+  script: &std::ffi::OsStr,
+  cwd: &Path,
+  program: &str,
+  env: &crate::opener::ShellEnv,
+  control: &Control,
+  emit: &mut dyn FnMut(Event),
+) {
+  let done = |result: Result<std::process::ExitStatus, String>, commands| Event::ShellTaskDone {
+    job,
+    result,
+    commands,
+  };
+  let (log, file) = match crate::opener::create_task_log() {
+    Ok(log) => log,
+    Err(e) => {
+      emit(done(
+        Err(format!("{program}: cannot create the log: {e}")),
+        Ok(Vec::new()),
+      ));
+      return;
+    }
+  };
+  emit(Event::ShellTaskStarted {
+    job,
+    log: log.clone(),
+  });
+  let cmd_file = crate::opener::CommandFile::create().ok();
+  let env = match &cmd_file {
+    Some(f) => f.env(env),
+    None => env.to_vec(),
+  };
+  let mut child = match crate::opener::spawn_shell_task(script, cwd, &env, &file) {
+    Ok(child) => child,
+    Err(e) => {
+      emit(done(Err(e.to_string()), Ok(Vec::new())));
+      return;
+    }
+  };
+  drop(file);
+  let pgid = child.id();
+  let mut last_line = String::new();
+  let mut paused = false;
+  let mut terminated: Option<Instant> = None;
+  let status = loop {
+    match child.try_wait() {
+      Ok(Some(status)) => break Ok(status),
+      Ok(None) => {}
+      Err(e) => break Err(format!("{program}: {e}")),
+    }
+    if control.is_cancelled() {
+      match terminated {
+        None => {
+          // A stopped group would not act on SIGTERM.
+          crate::opener::signal_group(pgid, libc::SIGCONT);
+          crate::opener::signal_group(pgid, libc::SIGTERM);
+          terminated = Some(Instant::now());
+        }
+        Some(at) if at.elapsed() >= SHELL_TASK_KILL_AFTER => {
+          crate::opener::signal_group(pgid, libc::SIGKILL);
+        }
+        Some(_) => {}
+      }
+    } else if control.is_paused() != paused {
+      paused = !paused;
+      let signal = if paused { libc::SIGSTOP } else { libc::SIGCONT };
+      crate::opener::signal_group(pgid, signal);
+    }
+    if let Some(line) = read_last_line(&log)
+      && line != last_line
+    {
+      last_line = line;
+      emit(Event::JobProgress {
+        job,
+        progress: Progress {
+          current: last_line.clone(),
+          ..Progress::default()
+        },
+      });
+    }
+    thread::sleep(SHELL_TASK_POLL);
+  };
+  if let Some(line) = read_last_line(&log)
+    && line != last_line
+  {
+    emit(Event::JobProgress {
+      job,
+      progress: Progress {
+        current: line,
+        ..Progress::default()
+      },
+    });
+  }
+  let commands = cmd_file.map_or(Ok(Vec::new()), crate::opener::CommandFile::take_lines);
+  emit(done(status, commands));
+}
+
+/// The last line of a task's log, from its last few KiB.
+fn read_last_line(log: &Path) -> Option<String> {
+  use std::io::{Read, Seek, SeekFrom};
+  let mut file = std::fs::File::open(log).ok()?;
+  let len = file.metadata().ok()?.len();
+  file
+    .seek(SeekFrom::Start(len.saturating_sub(SHELL_TASK_TAIL)))
+    .ok()?;
+  let mut tail = Vec::new();
+  file.take(SHELL_TASK_TAIL).read_to_end(&mut tail).ok()?;
+  crate::opener::last_output_line(&tail)
+}
+
+/// Runs a command to completion on the current thread. `Open`, `Spawn`, `Shell`, `ShellTask`,
+/// `ZoxideAdd` and `Clipboard` are ignored, so tests never touch the user's programs, zoxide database or
 /// clipboard.
 pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLimits) -> Vec<Event> {
   let token = CancelToken::never();
@@ -762,6 +921,8 @@ pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLim
     Command::Open(_)
     | Command::Spawn { .. }
     | Command::Shell { .. }
+    | Command::ShellTask { .. }
+    | Command::RemoveLog(_)
     | Command::ZoxideAdd(_)
     | Command::Clipboard(_)
     | Command::CancelPreview => Vec::new(),

@@ -9,7 +9,7 @@ use tansu::config::Config;
 use tansu::console::{ConsoleCommand, ConsoleError, EditOutcome, LineEditor, parse};
 use tansu::fs::meta::{format_permissions, human_size, human_size_compact};
 use tansu::fs::sort::natural_cmp;
-use tansu::keymap::{Key, KeyParseError, KeyResult, Keymap, parse_sequence};
+use tansu::keymap::{Binding, Key, KeyParseError, KeyResult, Keymap, parse_sequence};
 use tansu::nav::{Cursor, ScrollPos, passive_offset};
 use tansu::opener::run_foreground;
 use tansu::ui::layout::split_columns;
@@ -283,7 +283,7 @@ fn continuations_list_the_keys_after_a_prefix() {
     ("gxa".into(), "quit".into()),
     ("gxb".into(), "reload".into()),
   ];
-  let (mut km, warnings) = Keymap::with_overrides(overrides.iter().map(|(k, a)| (k, a)));
+  let (mut km, warnings) = Keymap::with_overrides(overrides.iter().map(|(k, a)| (k, a)), |_| false);
   assert!(warnings.is_empty());
   km.feed(ch('g'));
   let next = km.continuations();
@@ -300,15 +300,109 @@ fn config_overrides_add_replace_and_unbind() {
     ("x".into(), "explode".into()),
     ("<Bad>".into(), "quit".into()),
   ];
-  let (km, warnings) = Keymap::with_overrides(overrides.iter().map(|(k, v)| (k, v)));
-  assert_eq!(km.lookup(&[ch('J')]), Some(Action::HalfPageDown));
+  let (km, warnings) = Keymap::with_overrides(overrides.iter().map(|(k, v)| (k, v)), |_| false);
+  assert_eq!(
+    km.lookup(&[ch('J')]),
+    Some(Binding::Action(Action::HalfPageDown))
+  );
   assert_eq!(km.lookup(&[ch('q')]), None);
   assert_eq!(
     km.lookup(&parse_sequence("<C-n>").unwrap()),
-    Some(Action::MoveDown)
+    Some(Binding::Action(Action::MoveDown))
   );
-  assert_eq!(km.lookup(&[ch('j')]), Some(Action::MoveDown));
+  assert_eq!(
+    km.lookup(&[ch('j')]),
+    Some(Binding::Action(Action::MoveDown))
+  );
   assert_eq!(warnings.len(), 2, "{warnings:?}");
+}
+
+#[test]
+fn keys_bind_to_command_lines_and_custom_commands() {
+  use std::sync::Arc;
+  use tansu::keymap::Continuation;
+  let overrides: Vec<(String, String)> = vec![
+    ("ge".into(), "shell -w nvim %s".into()),
+    ("gD".into(), "  cd ~/Downloads ".into()),
+    ("gx".into(), "edit_conf extra".into()),
+    ("gy".into(), "frobnicate now".into()),
+    ("gz".into(), "sort sideways".into()),
+  ];
+  let (mut km, warnings) =
+    Keymap::with_overrides(overrides.iter().map(|(k, v)| (k, v)), |n| n == "edit_conf");
+  let line = |s: &str| Some(Binding::Line(Arc::from(s)));
+  let seq = |s: &str| parse_sequence(s).unwrap();
+  assert_eq!(km.lookup(&seq("ge")), line("shell -w nvim %s"));
+  assert_eq!(km.lookup(&seq("gD")), line("cd ~/Downloads"));
+  assert_eq!(km.lookup(&seq("gx")), line("edit_conf extra"));
+  // Unknown commands and bad arguments are reported, not bound.
+  assert_eq!(km.lookup(&seq("gy")), None);
+  assert_eq!(km.lookup(&seq("gz")), None);
+  assert_eq!(warnings.len(), 2, "{warnings:?}");
+  assert!(warnings[0].contains("frobnicate"), "{warnings:?}");
+
+  km.feed(ch('g'));
+  assert!(
+    km.continuations()
+      .contains(&("D".into(), Continuation::Line(Arc::from("cd ~/Downloads"))))
+  );
+  assert_eq!(
+    km.feed(ch('D')),
+    KeyResult::Line(Arc::from("cd ~/Downloads"))
+  );
+  let lines: Vec<String> = km.line_bindings().into_iter().map(|(k, _)| k).collect();
+  assert_eq!(lines, ["gD", "ge", "gx"]);
+}
+
+#[test]
+fn custom_commands_take_three_forms_and_are_validated() {
+  use tansu::config::UserCommand;
+  let mut cfg = Config::parse(
+    r#"
+    [commands]
+    one = "shell -w nvim %s"
+    many = ["reload", "cd /tmp"]
+    full = { run = "z %a", description = "Jump" }
+    cd = "reload"
+    "two words" = "reload"
+    blank = ["", " "]
+    "#,
+  )
+  .unwrap();
+  let warnings = cfg.validate();
+  assert_eq!(warnings.len(), 3, "{warnings:?}");
+  let names: Vec<&str> = cfg.commands.keys().map(String::as_str).collect();
+  assert_eq!(names, ["full", "many", "one"]);
+  assert_eq!(
+    cfg.commands["one"],
+    UserCommand {
+      run: vec!["shell -w nvim %s".into()],
+      description: None
+    }
+  );
+  assert_eq!(cfg.commands["many"].run, ["reload", "cd /tmp"]);
+  assert_eq!(
+    cfg.commands["full"],
+    UserCommand {
+      run: vec!["z %a".into()],
+      description: Some("Jump".into())
+    }
+  );
+  // Unknown keys in the table form are errors, as everywhere else in the config.
+  assert!(Config::parse("[commands]\nx = { run = \"reload\", desc = \"y\" }").is_err());
+}
+
+#[test]
+fn custom_command_arguments_expand_in_place_of_percent_a() {
+  use tansu::console::expand_args;
+  assert_eq!(expand_args("z %a", "foo bar"), "z foo bar");
+  assert_eq!(expand_args("shell echo %{a}x", "1"), "shell echo 1x");
+  // Shell macros and literal percents are left for `:shell`.
+  assert_eq!(
+    expand_args("shell cp %s %%a %ab %", "x"),
+    "shell cp %s %%a %ab %"
+  );
+  assert_eq!(expand_args("cd %a", ""), "cd ");
 }
 
 #[test]
@@ -477,7 +571,7 @@ fn documented_sample_config_parses_without_warnings() {
     tansu::config::Theme::default(),
     "configuration.md lists the defaults"
   );
-  let (_, warnings) = Keymap::with_overrides(&cfg.keys);
+  let (_, warnings) = Keymap::with_overrides(&cfg.keys, |n| cfg.commands.contains_key(n));
   assert!(warnings.is_empty(), "{warnings:?}");
 }
 
@@ -855,6 +949,8 @@ fn complete_with(line: &str, selected: Option<&str>) -> Vec<String> {
       programs: &list,
       subdirs: &subdirs,
       files: &files,
+      user_commands: &["edit"],
+      task_logs: 3,
     },
   )
 }
@@ -927,6 +1023,8 @@ fn completes_command_names() {
   assert_eq!(complete_with("z", None), vec!["z "]);
   assert_eq!(complete_with("  so", None), vec!["sort "]);
   assert_eq!(complete_with("open", None), vec!["open", "open_with "]);
+  // Custom commands from the config are offered too.
+  assert_eq!(complete_with("ed", None), vec!["edit"]);
   assert!(complete_with("zzz", None).is_empty());
   let all = complete_with("", None);
   assert!(all.contains(&"quit".to_string()) && all.contains(&"rename ".to_string()));
@@ -1238,9 +1336,17 @@ fn shell_commands_run_in_the_given_directory() {
   };
   // `%f` is a bare name, so this only passes when the shell runs in `dir`.
   let script = expand_macros("test -f %f && test -d %d && test -f %p", &ctx).unwrap();
-  assert!(run_shell_silent(&script, tmp.path()).unwrap().success());
+  assert!(
+    run_shell_silent(&script, tmp.path(), &[])
+      .unwrap()
+      .success()
+  );
   let other = tempfile::tempdir().unwrap();
-  assert!(!run_shell_silent(&script, other.path()).unwrap().success());
+  assert!(
+    !run_shell_silent(&script, other.path(), &[])
+      .unwrap()
+      .success()
+  );
 }
 
 mod search {
@@ -1650,4 +1756,278 @@ fn args_reject_unknown_missing_and_repeated() {
   );
   assert!(parse_args(&["a", "b"]).unwrap_err().contains("too many"));
   assert!(parse_args(&["--selectfile=a", "b"]).is_err());
+}
+
+#[test]
+fn shell_commands_send_lines_back_through_the_command_file() {
+  use std::ffi::OsString;
+  use tansu::opener::{run_shell_silent, with_command_file};
+  let tmp = tempfile::tempdir().unwrap();
+  let env = [(OsString::from("GREETING"), OsString::from("hi"))];
+  let script = OsString::from(
+    r#"printf 'cd /tmp\n\n  %s  \n' "$GREETING" >> "$TANSU_CMD"; echo "$TANSU_CMD" > path"#,
+  );
+  let (status, lines) = with_command_file(&env, |env| {
+    run_shell_silent(&script, tmp.path(), env).unwrap()
+  });
+  assert!(status.success());
+  assert_eq!(lines.unwrap(), ["cd /tmp", "hi"]);
+  // The file is gone once read.
+  let path = std::fs::read_to_string(tmp.path().join("path")).unwrap();
+  assert!(!std::path::Path::new(path.trim()).exists(), "{path}");
+}
+
+#[test]
+fn background_shell_commands_report_the_lines_they_wrote() {
+  use std::sync::{Arc, mpsc};
+  use std::time::Duration;
+  use tansu::app::Command;
+  use tansu::event::Event;
+  use tansu::preview::{PreviewLimits, PreviewRegistry};
+  use tansu::runtime::Runtime;
+  use tansu::shell::ShellMode;
+  let tmp = tempfile::tempdir().unwrap();
+  let (tx, rx) = mpsc::channel();
+  let mut runtime = Runtime::new(
+    tx,
+    Arc::new(PreviewRegistry::with_defaults()),
+    PreviewLimits::default(),
+    None,
+    "xdg-open".into(),
+  );
+  for mode in [ShellMode::Silent, ShellMode::Detached] {
+    let error = runtime.execute(Command::Shell {
+      script: r#"echo "cd $TANSU_DIR" >> "$TANSU_CMD""#.into(),
+      cwd: tmp.path().to_path_buf(),
+      mode,
+      program: "echo".into(),
+      env: vec![("TANSU_DIR".into(), "/tmp".into())],
+    });
+    assert_eq!(error, None);
+    let commands = match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+      Event::ProgramExited { commands, .. } if mode == ShellMode::Silent => commands,
+      Event::DetachedExited { commands } if mode == ShellMode::Detached => commands,
+      other => panic!("{mode:?}: unexpected {other:?}"),
+    };
+    assert_eq!(commands.unwrap(), ["cd /tmp"], "{mode:?}");
+  }
+}
+
+#[test]
+fn shell_b_flag_runs_a_task_unless_another_mode_needs_the_terminal() {
+  use tansu::shell::{ShellFlags, ShellMode};
+  let mode = |flags: &str| ShellFlags::parse(flags).mode;
+  assert_eq!(mode("b"), ShellMode::Task);
+  assert_eq!(mode("bf"), ShellMode::Task);
+  assert_eq!(mode("bs"), ShellMode::Task);
+  assert_eq!(mode("bw"), ShellMode::Task);
+  assert_eq!(mode("bt"), ShellMode::Terminal);
+  assert_eq!(mode("bp"), ShellMode::Pager);
+  assert_eq!(mode("rb"), ShellMode::Foreground { wait_enter: false });
+  assert_eq!(mode("bB"), ShellMode::Foreground { wait_enter: false });
+}
+
+#[test]
+fn the_last_output_line_skips_blanks_redraws_and_escapes() {
+  use tansu::opener::last_output_line;
+  assert_eq!(last_output_line(b"one\ntwo\n\n  \n"), Some("two".into()));
+  // Progress bars redraw the line with `\r`; the latest drawing counts.
+  assert_eq!(
+    last_output_line(b"start\n 10%\r 50%\r 90%"),
+    Some("90%".into())
+  );
+  assert_eq!(last_output_line(b"done\r\n"), Some("done".into()));
+  assert_eq!(
+    last_output_line(b"\x1b[1;32mok\x1b[0m\tnext \x1b]0;title\x07end\x01"),
+    Some("ok next end?".into())
+  );
+  assert_eq!(
+    last_output_line(b"bad \xff byte"),
+    Some("bad \u{fffd} byte".into())
+  );
+  assert_eq!(last_output_line(b"\n\n"), None);
+  assert_eq!(last_output_line(b""), None);
+}
+
+#[test]
+fn finished_task_logs_are_capped_and_the_oldest_go() {
+  use tansu::jobs::{FinishedLog, Jobs, MAX_FINISHED_LOGS};
+  let mut jobs = Jobs::default();
+  let log = |n: usize| FinishedLog {
+    what: format!("job {n}"),
+    log: format!("/run/log{n}").into(),
+    ok: true,
+  };
+  for n in 0..MAX_FINISHED_LOGS {
+    assert!(jobs.keep_log(log(n)).is_empty());
+  }
+  let dropped = jobs.keep_log(log(MAX_FINISHED_LOGS));
+  assert_eq!(dropped, [std::path::PathBuf::from("/run/log0")]);
+  assert_eq!(jobs.finished_logs.len(), MAX_FINISHED_LOGS);
+  assert_eq!(jobs.finished_logs[0].what, "job 1");
+  assert_eq!(jobs.log_files().len(), MAX_FINISHED_LOGS);
+}
+
+#[test]
+fn tasklog_takes_an_optional_number_and_completes_the_kept_logs() {
+  assert_eq!(parse("tasklog"), Some(Ok(ConsoleCommand::TaskLog(1))));
+  assert_eq!(parse("tasklog 3"), Some(Ok(ConsoleCommand::TaskLog(3))));
+  assert_eq!(
+    parse("tasklog 0"),
+    Some(Err(ConsoleError::BadTaskLogNumber("0".into())))
+  );
+  assert!(matches!(
+    parse("tasklog 1 2"),
+    Some(Err(ConsoleError::UnexpectedArgument { .. }))
+  ));
+  assert_eq!(
+    complete_with("tasklog ", None),
+    ["tasklog 1", "tasklog 2", "tasklog 3"]
+  );
+  assert_eq!(complete_with("task", None), ["tasklog ", "tasks"]);
+}
+
+/// Runs a shell task on a thread, as the runtime does, collecting its events.
+fn start_shell_task(
+  script: &str,
+  control: std::sync::Arc<tansu::jobs::Control>,
+) -> (
+  std::sync::mpsc::Receiver<tansu::event::Event>,
+  tempfile::TempDir,
+) {
+  let tmp = tempfile::tempdir().unwrap();
+  let cwd = tmp.path().to_path_buf();
+  let script = std::ffi::OsString::from(script);
+  let (tx, rx) = std::sync::mpsc::channel();
+  std::thread::spawn(move || {
+    tansu::runtime::run_shell_task(7, &script, &cwd, "sh", &[], &control, &mut |ev| {
+      let _ = tx.send(ev);
+    });
+  });
+  (rx, tmp)
+}
+
+#[test]
+fn shell_tasks_report_their_log_last_line_and_exit() {
+  use std::sync::Arc;
+  use std::time::Duration;
+  use tansu::event::Event;
+  let (rx, _tmp) = start_shell_task(
+    "for i in 1 2 3; do echo step $i; sleep 0.3; done; echo 'cd /tmp' >> \"$TANSU_CMD\"",
+    Arc::default(),
+  );
+  let wait = Duration::from_secs(10);
+  let Event::ShellTaskStarted { job: 7, log } = rx.recv_timeout(wait).unwrap() else {
+    panic!("not started");
+  };
+  let mut lines = Vec::new();
+  let (result, commands) = loop {
+    match rx.recv_timeout(wait).unwrap() {
+      Event::JobProgress { job: 7, progress } => lines.push(progress.current),
+      Event::ShellTaskDone {
+        job: 7,
+        result,
+        commands,
+      } => break (result, commands),
+      other => panic!("unexpected {other:?}"),
+    }
+  };
+  assert!(result.unwrap().success());
+  assert_eq!(commands.unwrap(), ["cd /tmp"]);
+  assert!(lines.len() >= 2, "{lines:?}");
+  assert_eq!(lines.last().map(String::as_str), Some("step 3"));
+  assert_eq!(
+    std::fs::read_to_string(&log).unwrap(),
+    "step 1\nstep 2\nstep 3\n"
+  );
+  std::fs::remove_file(log).unwrap();
+}
+
+#[test]
+fn shell_tasks_pause_and_cancel_through_their_control() {
+  use std::sync::Arc;
+  use std::time::{Duration, Instant};
+  use tansu::event::Event;
+  use tansu::jobs::Control;
+  let control = Arc::new(Control::default());
+  let (rx, _tmp) = start_shell_task(
+    "i=0; while true; do i=$((i+1)); echo $i; sleep 0.05; done",
+    Arc::clone(&control),
+  );
+  let wait = Duration::from_secs(10);
+  let Event::ShellTaskStarted { log, .. } = rx.recv_timeout(wait).unwrap() else {
+    panic!("not started");
+  };
+  std::thread::sleep(Duration::from_millis(400));
+  control.set_paused(true);
+  // The watcher stops the group within one poll.
+  std::thread::sleep(Duration::from_millis(500));
+  let paused_len = std::fs::metadata(&log).unwrap().len();
+  std::thread::sleep(Duration::from_millis(500));
+  assert_eq!(
+    std::fs::metadata(&log).unwrap().len(),
+    paused_len,
+    "output while paused"
+  );
+  control.set_paused(false);
+  std::thread::sleep(Duration::from_millis(500));
+  assert!(
+    std::fs::metadata(&log).unwrap().len() > paused_len,
+    "no output after resuming"
+  );
+
+  let cancelled = Instant::now();
+  control.cancel();
+  let result = loop {
+    if let Event::ShellTaskDone { result, .. } = rx.recv_timeout(wait).unwrap() {
+      break result;
+    }
+  };
+  assert!(!result.unwrap().success());
+  assert!(cancelled.elapsed() < Duration::from_secs(2));
+  std::fs::remove_file(log).unwrap();
+}
+
+#[test]
+fn command_history_steps_through_matching_lines_and_back_to_the_draft() {
+  use tansu::console::{HISTORY_SIZE, History};
+  let mut h = History::new(
+    [
+      "cd /tmp",
+      "shell make",
+      "  ",
+      "reload",
+      "shell make test",
+      "cd /tmp",
+    ]
+    .map(String::from),
+  );
+  // Blank lines are dropped and a repeated line moves to the end.
+  assert_eq!(
+    h.entries(),
+    ["shell make", "reload", "shell make test", "cd /tmp"]
+  );
+  assert_eq!(h.older("").as_deref(), Some("cd /tmp"));
+  assert_eq!(h.older("cd /tmp").as_deref(), Some("shell make test"));
+  assert_eq!(h.newer("shell make test").as_deref(), Some("cd /tmp"));
+  // Past the newest entry the typed line comes back.
+  assert_eq!(h.newer("cd /tmp").as_deref(), Some(""));
+  assert_eq!(h.newer(""), None);
+
+  // What was typed filters, and the oldest match stays put.
+  assert_eq!(h.older("shell").as_deref(), Some("shell make test"));
+  assert_eq!(h.older("shell make test").as_deref(), Some("shell make"));
+  assert_eq!(h.older("shell make"), None);
+  assert_eq!(h.newer("shell make").as_deref(), Some("shell make test"));
+  assert_eq!(h.newer("shell make test").as_deref(), Some("shell"));
+  // A typed line that is already in the history has nothing else to match.
+  h.reset();
+  assert_eq!(h.older("cd /tmp"), None);
+
+  let mut h = History::new((0..HISTORY_SIZE + 5).map(|n| format!("cd {n}")));
+  assert_eq!(h.entries().len(), HISTORY_SIZE);
+  assert_eq!(h.entries()[0], "cd 5");
+  h.push("cd 5");
+  assert_eq!(h.entries().last().map(String::as_str), Some("cd 5"));
+  assert_eq!(h.entries().len(), HISTORY_SIZE);
 }

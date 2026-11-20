@@ -2,12 +2,14 @@
 //! foreground with the terminal handed over to it.
 
 use std::ffi::{OsStr, OsString};
-use std::io::Write;
+use std::fs::File;
+use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
-use std::process::{Command, ExitStatus, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
 use crate::terminal;
@@ -144,17 +146,35 @@ pub fn user_shell() -> OsString {
   }
 }
 
-/// `<shell> -c <script>`, run in `cwd`, with the shell's name for messages.
-fn shell_command(script: &OsStr, cwd: &Path) -> (String, Command) {
+/// Environment variables added for a shell command, as `(name, value)` pairs.
+pub type ShellEnv = [(OsString, OsString)];
+
+/// `<shell> -c <script>`, run in `cwd` with `env` added, with the shell's name for messages.
+/// `TANSU_LEVEL` counts how deeply tansu is nested, like ranger's `RANGER_LEVEL`.
+fn shell_command(script: &OsStr, cwd: &Path, env: &ShellEnv) -> (String, Command) {
   let shell = user_shell();
+  let level = std::env::var("TANSU_LEVEL")
+    .ok()
+    .and_then(|l| l.parse::<u32>().ok())
+    .unwrap_or(0);
   let mut cmd = Command::new(&shell);
-  cmd.arg("-c").arg(script).current_dir(cwd);
+  cmd
+    .arg("-c")
+    .arg(script)
+    .current_dir(cwd)
+    .env("TANSU_LEVEL", (level + 1).to_string())
+    .envs(env.iter().map(|(k, v)| (k, v)));
   (shell.to_string_lossy().into_owned(), cmd)
 }
 
 /// Runs a shell script on the terminal and waits for it, like [`run_foreground`].
-pub fn run_shell(script: &OsStr, cwd: &Path, wait_enter: bool) -> Result<ExitStatus, OpenError> {
-  let (program, cmd) = shell_command(script, cwd);
+pub fn run_shell(
+  script: &OsStr,
+  cwd: &Path,
+  env: &ShellEnv,
+  wait_enter: bool,
+) -> Result<ExitStatus, OpenError> {
+  let (program, cmd) = shell_command(script, cwd, env);
   wait_on_terminal(&program, cmd, wait_enter)
 }
 
@@ -162,8 +182,12 @@ pub fn run_shell(script: &OsStr, cwd: &Path, wait_enter: bool) -> Result<ExitSta
 /// Like ranger, the script is not waited for after the pager is closed: it finishes on its
 /// own or dies writing to the closed pipe. Returns the script's status if it has exited,
 /// otherwise the pager's.
-pub fn run_shell_paged(script: &OsStr, cwd: &Path) -> Result<ExitStatus, OpenError> {
-  let (program, mut cmd) = shell_command(script, cwd);
+pub fn run_shell_paged(
+  script: &OsStr,
+  cwd: &Path,
+  env: &ShellEnv,
+) -> Result<ExitStatus, OpenError> {
+  let (program, mut cmd) = shell_command(script, cwd, env);
   let (reader, writer) = std::io::pipe().map_err(spawn_error(&program))?;
   let stderr = writer.try_clone().map_err(spawn_error(&program))?;
   cmd.stdin(Stdio::null()).stdout(writer).stderr(stderr);
@@ -198,8 +222,12 @@ pub fn run_shell_paged(script: &OsStr, cwd: &Path) -> Result<ExitStatus, OpenErr
 const PAGER: &str = "less";
 
 /// Runs a shell script with null stdio, in its own process group, and waits for it.
-pub fn run_shell_silent(script: &OsStr, cwd: &Path) -> Result<ExitStatus, OpenError> {
-  let (program, mut cmd) = shell_command(script, cwd);
+pub fn run_shell_silent(
+  script: &OsStr,
+  cwd: &Path,
+  env: &ShellEnv,
+) -> Result<ExitStatus, OpenError> {
+  let (program, mut cmd) = shell_command(script, cwd, env);
   cmd
     .stdin(Stdio::null())
     .stdout(Stdio::null())
@@ -213,9 +241,10 @@ pub fn run_shell_silent(script: &OsStr, cwd: &Path) -> Result<ExitStatus, OpenEr
 pub fn spawn_shell_detached(
   script: &OsStr,
   cwd: &Path,
+  env: &ShellEnv,
   on_exit: impl FnOnce() + Send + 'static,
 ) -> Result<(), OpenError> {
-  let (program, cmd) = shell_command(script, cwd);
+  let (program, cmd) = shell_command(script, cwd, env);
   detach(&program, cmd, on_exit)
 }
 
@@ -223,6 +252,7 @@ pub fn spawn_shell_detached(
 pub fn spawn_shell_in_terminal(
   script: &OsStr,
   cwd: &Path,
+  env: &ShellEnv,
   on_exit: impl FnOnce() + Send + 'static,
 ) -> Result<(), OpenError> {
   if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
@@ -231,7 +261,185 @@ pub fn spawn_shell_in_terminal(
   let mut wrapped = OsString::from(terminal_emulator());
   wrapped.push(" -e ");
   wrapped.push(script);
-  spawn_shell_detached(&wrapped, cwd, on_exit)
+  spawn_shell_detached(&wrapped, cwd, env, on_exit)
+}
+
+/// Creates a new empty file readable only by the user, `tansu-<pid>-<n>.<ext>` in
+/// `$XDG_RUNTIME_DIR` (or the temporary directory).
+fn private_file(ext: &str) -> std::io::Result<(PathBuf, File)> {
+  static COUNTER: AtomicU64 = AtomicU64::new(0);
+  let dir = std::env::var_os("XDG_RUNTIME_DIR")
+    .map(PathBuf::from)
+    .filter(|d| d.is_dir())
+    .unwrap_or_else(std::env::temp_dir);
+  let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+  let path = dir.join(format!("tansu-{}-{n}.{ext}", std::process::id()));
+  let file = std::fs::OpenOptions::new()
+    .write(true)
+    .create_new(true)
+    .mode(0o600)
+    .open(&path)?;
+  Ok((path, file))
+}
+
+/// Creates the log of a shell task (`:shell -b`).
+pub fn create_task_log() -> std::io::Result<(PathBuf, File)> {
+  private_file("log")
+}
+
+/// Starts a shell script in the background, in its own process group, with stdout and
+/// stderr appended to `log`. Its process group id is its pid.
+pub fn spawn_shell_task(
+  script: &OsStr,
+  cwd: &Path,
+  env: &ShellEnv,
+  log: &File,
+) -> Result<Child, OpenError> {
+  let (program, mut cmd) = shell_command(script, cwd, env);
+  let out = log.try_clone().map_err(spawn_error(&program))?;
+  let err = log.try_clone().map_err(spawn_error(&program))?;
+  cmd
+    .stdin(Stdio::null())
+    .stdout(out)
+    .stderr(err)
+    .process_group(0)
+    .spawn()
+    .map_err(spawn_error(&program))
+}
+
+/// Sends `signal` to every process in the group `pgid`.
+pub fn signal_group(pgid: u32, signal: libc::c_int) {
+  if let Ok(pgid) = libc::pid_t::try_from(pgid) {
+    // SAFETY: kill only sends a signal; a stale group id fails with ESRCH.
+    unsafe {
+      libc::kill(-pgid, signal);
+    }
+  }
+}
+
+/// The line a task's output last showed, from the end of its log: the last non-blank line,
+/// and of that the part after the last `\r` (progress bars redraw a line with `\r`). Escape
+/// sequences are dropped and other control characters made safe to draw.
+pub fn last_output_line(tail: &[u8]) -> Option<String> {
+  let text = String::from_utf8_lossy(tail);
+  text
+    .split('\n')
+    .rev()
+    .map(|line| {
+      let shown = line.trim_end_matches('\r');
+      let shown = shown.rsplit('\r').next().unwrap_or_default();
+      strip_escapes(shown).trim().to_string()
+    })
+    .find(|line| !line.is_empty())
+}
+
+/// `s` without ANSI escape sequences (CSI, OSC and two-character ones), with tabs as spaces
+/// and other control characters as `?`.
+fn strip_escapes(s: &str) -> String {
+  let mut out = String::with_capacity(s.len());
+  let mut chars = s.chars().peekable();
+  while let Some(c) = chars.next() {
+    match c {
+      '\x1b' => match chars.next() {
+        // CSI: parameters up to a final byte in `@`..`~`.
+        Some('[') => {
+          for c in chars.by_ref() {
+            if ('@'..='~').contains(&c) {
+              break;
+            }
+          }
+        }
+        // OSC: up to BEL or ESC `\`.
+        Some(']') => {
+          while let Some(c) = chars.next() {
+            if c == '\x07' {
+              break;
+            }
+            if c == '\x1b' {
+              chars.next_if_eq(&'\\');
+              break;
+            }
+          }
+        }
+        _ => {}
+      },
+      '\t' => out.push(' '),
+      c if c.is_control() => out.push('?'),
+      c => out.push(c),
+    }
+  }
+  out
+}
+
+/// Most of a command file that is read; the rest is ignored.
+const COMMAND_FILE_MAX: u64 = 64 * 1024;
+
+/// A file a shell command can write command lines into, named by `$TANSU_CMD`. tansu runs
+/// those lines once the command exits. The file is removed when dropped.
+#[derive(Debug)]
+pub struct CommandFile {
+  path: PathBuf,
+}
+
+impl CommandFile {
+  /// Creates an empty file, readable only by the user, in `$XDG_RUNTIME_DIR` (or the
+  /// temporary directory).
+  pub fn create() -> std::io::Result<CommandFile> {
+    let (path, _) = private_file("cmd")?;
+    Ok(CommandFile { path })
+  }
+
+  pub fn path(&self) -> &Path {
+    &self.path
+  }
+
+  /// `env` with `TANSU_CMD` naming this file.
+  pub fn env(&self, env: &ShellEnv) -> Vec<(OsString, OsString)> {
+    let mut env = env.to_vec();
+    env.push(("TANSU_CMD".into(), self.path.clone().into_os_string()));
+    env
+  }
+
+  /// The non-blank lines written into the file, which is then removed.
+  pub fn take_lines(self) -> Result<Vec<String>, String> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(&self.path)
+      .and_then(|f| f.take(COMMAND_FILE_MAX).read_to_end(&mut bytes))
+      .map_err(|e| format!("{}: {e}", self.path.display()))?;
+    Ok(
+      String::from_utf8_lossy(&bytes)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect(),
+    )
+  }
+}
+
+impl Drop for CommandFile {
+  fn drop(&mut self) {
+    let _ = std::fs::remove_file(&self.path);
+  }
+}
+
+/// Runs `script` as a shell command with a fresh [`CommandFile`]: `run` gets the environment
+/// to use, and the returned lines are what the command wrote into the file. Failing to
+/// create the file only loses that channel; the command still runs.
+pub fn with_command_file<T>(
+  env: &ShellEnv,
+  run: impl FnOnce(&ShellEnv) -> T,
+) -> (T, Result<Vec<String>, String>) {
+  match CommandFile::create() {
+    Ok(file) => {
+      let out = run(&file.env(env));
+      (out, file.take_lines())
+    }
+    Err(e) => (
+      run(env),
+      Err(format!("cannot create the command file: {e}")),
+    ),
+  }
 }
 
 /// The terminal emulator for `:shell -t`, chosen like ranger: `$TERMCMD`, `$TERM`,

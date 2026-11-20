@@ -93,9 +93,26 @@ pub enum Event {
   ProgramExited {
     program: String,
     result: Result<ExitStatus, String>,
+    /// Command lines it wrote into `$TANSU_CMD`.
+    commands: Result<Vec<String>, String>,
+  },
+  /// A shell task (`:shell -b`) started, writing its output into `log`.
+  ShellTaskStarted {
+    job: JobId,
+    log: PathBuf,
+  },
+  /// A shell task exited (or could not start).
+  ShellTaskDone {
+    job: JobId,
+    result: Result<ExitStatus, String>,
+    /// Command lines it wrote into `$TANSU_CMD`.
+    commands: Result<Vec<String>, String>,
   },
   /// A detached program (`:shell -f`, `:shell -t`) exited; it may have changed files.
-  DetachedExited,
+  DetachedExited {
+    /// Command lines it wrote into `$TANSU_CMD`.
+    commands: Result<Vec<String>, String>,
+  },
   /// VCS status for the entries of `dir`, plus the repositories involved.
   Vcs {
     dir: PathBuf,

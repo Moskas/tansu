@@ -26,6 +26,7 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App) {
     .into_iter()
     .map(|(key, next)| match next {
       Continuation::Action(action) => (key, action.description().to_string(), Style::new()),
+      Continuation::Line(line) => (key, app.line_description(&line), Style::new()),
       Continuation::Group(n) => {
         let plural = if n == 1 { "binding" } else { "bindings" };
         let style = Style::new().fg(theme.help_group.0);

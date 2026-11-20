@@ -44,6 +44,9 @@ which_key = true
 # needs Shift held.
 mouse_enabled = true
 
+# Keep the command-line history in $XDG_DATA_HOME/tansu/history across sessions.
+save_console_history = true
+
 [preview]
 max_bytes = 65536     # bytes read from a file for the text preview
 max_lines = 300       # lines kept from a text preview
@@ -106,7 +109,8 @@ vcs_commit = "lightyellow"
 
 # Key notation follows vim: plain characters, sequences ("gg"), and <...> for special
 # keys and modifiers (<C-d>, <A-x>, <S-Tab>, <Enter>, <Esc>, <Space>, <lt>, <F5>).
-# Values are action names; "none" removes a default binding.
+# Values are action names or command lines (see commands.md); "none" removes a default
+# binding.
 [keys]
 "J" = "half_page_down"
 "K" = "half_page_up"
@@ -114,6 +118,13 @@ vcs_commit = "lightyellow"
 "<C-y>" = "move_up"
 "<BS>" = "none"
 "ot" = "sort mtime"
+"gD" = "cd ~/Downloads"
+"ge" = "edit"
+
+# Custom commands: one command line, a list run in order, or a table with `run` and
+# `description`. `%a` stands for the arguments typed after the name.
+[commands]
+edit = { run = "shell $EDITOR %s", description = "Edit the selection" }
 ```
 
 
@@ -129,5 +140,6 @@ Action names: `move_up`, `move_down`, `move_top`, `move_bottom`, `half_page_up`,
 `tab_close`, `tab_next`, `tab_prev`, `tab_restore`, `tab_open 1` .. `tab_open 9`, `quit`,
 `quit_all`.
 
+Keys can also run command lines and custom commands; see [Custom commands](commands.md).
 The default bindings are listed in [Usage](usage.md#key-bindings). With Nix, the same
 settings can be written by the [Home Manager module](installation.md#home-manager).

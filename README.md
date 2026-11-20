@@ -82,6 +82,7 @@ Optional programs such as `bat`, `ffmpeg`, `poppler` and 7-Zip enable more previ
 - [File operations](docs/file-operations.md): paste, tasks, delete, extract, clipboard
 - [Command line](docs/command-line.md): commands, search, shell macros, completion
 - [Configuration](docs/configuration.md): `config.toml`, theme, key bindings
+- [Custom commands](docs/commands.md): binding keys to command lines, `[commands]`, scripts
 - [Architecture](docs/architecture.md): development, module layout, extension points
 
 ## Development

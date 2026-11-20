@@ -43,6 +43,7 @@ them all.
 | `b`, `Esc` | Send to the background                                     |
 | `p`        | Pause or resume the selected task                          |
 | `x`        | Cancel the selected task                                   |
+| `l`        | Show the selected shell task's output in `less`            |
 | `j`, `k`   | Select a task (several tasks)                              |
 
 In the background, the status bar shows the running task's progress and how many more
@@ -58,6 +59,23 @@ is. A cancelled extraction leaves nothing behind. Deleting stops between entries
 A paused copy or extraction waits within a few MiB, a deletion before its next entry. An
 archive unpacked by an external program is finished first. Quitting tansu stops running
 tasks without that cleanup.
+
+### Shell tasks
+
+`:shell -b <command>` runs a shell command as a task. Shell tasks run alongside the file
+tasks and each other instead of queueing. Their stdout and stderr go into a log, and the
+popup shows the command, the last line of its output (the latest redraw of a progress bar
+that rewrites its line with `\r`, without colors) and how long it has been running. `l` opens
+the log in `less +F`, which follows new output; `<C-c>` stops following and `q` returns.
+
+`p` stops and continues the command's whole process group with SIGSTOP and SIGCONT. `x`
+sends it SIGTERM, then SIGKILL if it is still running 3 seconds later. When it exits, the
+directory is reloaded, a failure is reported with the last line of output, and the command
+lines it wrote into `$TANSU_CMD` are run (see [Custom commands](commands.md)).
+
+Logs of the last 20 finished shell tasks are kept: `:tasklog` opens the latest in `less`,
+`:tasklog 2` the one before, and so on. Logs live in `$XDG_RUNTIME_DIR` and are deleted when
+tansu quits. Shell tasks still running then keep running, but their output is lost.
 
 ## Deleting and creating
 

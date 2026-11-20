@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -195,28 +196,58 @@ fn parse_special(inner: &str) -> Result<Key, KeyParseError> {
   Ok(Key::new(code, mods))
 }
 
+/// What a key sequence is bound to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Binding {
+  Action(Action),
+  /// A command line, run as if typed after `:`.
+  Line(Arc<str>),
+}
+
 /// Result of feeding one key into the keymap.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyResult {
   Action(Action),
+  /// Run this command line.
+  Line(Arc<str>),
   /// The keys so far are a prefix of a longer binding (e.g. the first `g` of `gg`).
   Pending,
   Unbound,
 }
 
 /// What pressing one more key does while a sequence is pending.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Continuation {
   /// Completes the sequence and runs this action.
   Action(Action),
+  /// Completes the sequence and runs this command line.
+  Line(Arc<str>),
   /// Leads to this many longer bindings.
   Group(usize),
+}
+
+impl From<Binding> for Continuation {
+  fn from(b: Binding) -> Self {
+    match b {
+      Binding::Action(a) => Continuation::Action(a),
+      Binding::Line(l) => Continuation::Line(l),
+    }
+  }
+}
+
+impl From<Binding> for KeyResult {
+  fn from(b: Binding) -> Self {
+    match b {
+      Binding::Action(a) => KeyResult::Action(a),
+      Binding::Line(l) => KeyResult::Line(l),
+    }
+  }
 }
 
 /// Binding table plus the state needed to resolve multi-key sequences.
 #[derive(Debug, Clone)]
 pub struct Keymap {
-  bindings: BTreeMap<Vec<KeyId>, (Vec<Key>, Action)>,
+  bindings: BTreeMap<Vec<KeyId>, (Vec<Key>, Binding)>,
   pending: Vec<Key>,
 }
 
@@ -334,13 +365,15 @@ impl Keymap {
   }
 
   /// Default bindings with config overrides applied. Each override maps key notation to an
-  /// action name or `"none"`. Invalid entries are skipped and reported.
+  /// action name, a command line or `"none"`. A command line must start with a built-in
+  /// command or a custom one (`is_user_command`). Invalid entries are skipped and reported.
   pub fn with_overrides<'a>(
     overrides: impl IntoIterator<Item = (&'a String, &'a String)>,
+    is_user_command: impl Fn(&str) -> bool,
   ) -> (Self, Vec<String>) {
     let mut km = Keymap::default();
     let mut warnings = Vec::new();
-    for (keys, action) in overrides {
+    for (keys, value) in overrides {
       let seq = match parse_sequence(keys) {
         Ok(seq) => seq,
         Err(e) => {
@@ -348,28 +381,46 @@ impl Keymap {
           continue;
         }
       };
-      if action == UNBIND {
+      if value == UNBIND {
         km.unbind(&seq);
         continue;
       }
-      match action.parse::<Action>() {
-        Ok(a) => km.bind(seq, a),
-        Err(e) => warnings.push(format!("keys: `{keys}`: {e}")),
+      if let Ok(a) = value.parse::<Action>() {
+        km.bind(seq, a);
+        continue;
+      }
+      let (name, _) = crate::console::split_command(value);
+      if is_user_command(name) {
+        km.bind_line(seq, value);
+        continue;
+      }
+      match crate::console::parse(value) {
+        Some(Ok(_)) => km.bind_line(seq, value),
+        Some(Err(e)) => warnings.push(format!("keys: `{keys}`: {e}")),
+        None => warnings.push(format!("keys: `{keys}`: empty command")),
       }
     }
     (km, warnings)
   }
 
   pub fn bind(&mut self, seq: Vec<Key>, action: Action) {
-    self.bindings.insert(seq_id(&seq), (seq, action));
+    self
+      .bindings
+      .insert(seq_id(&seq), (seq, Binding::Action(action)));
+  }
+
+  /// Binds `seq` to run a command line.
+  pub fn bind_line(&mut self, seq: Vec<Key>, line: &str) {
+    let line = Binding::Line(Arc::from(line.trim()));
+    self.bindings.insert(seq_id(&seq), (seq, line));
   }
 
   pub fn unbind(&mut self, seq: &[Key]) {
     self.bindings.remove(&seq_id(seq));
   }
 
-  pub fn lookup(&self, seq: &[Key]) -> Option<Action> {
-    self.bindings.get(&seq_id(seq)).map(|(_, a)| *a)
+  pub fn lookup(&self, seq: &[Key]) -> Option<Binding> {
+    self.bindings.get(&seq_id(seq)).map(|(_, b)| b.clone())
   }
 
   /// All bindings for `action`, in notation form.
@@ -377,8 +428,20 @@ impl Keymap {
     self
       .bindings
       .values()
-      .filter(|(_, a)| *a == action)
+      .filter(|(_, b)| *b == Binding::Action(action))
       .map(|(seq, _)| format_sequence(seq))
+      .collect()
+  }
+
+  /// Bindings to command lines, as (keys in notation form, line), sorted by keys.
+  pub fn line_bindings(&self) -> Vec<(String, Arc<str>)> {
+    self
+      .bindings
+      .values()
+      .filter_map(|(seq, b)| match b {
+        Binding::Line(line) => Some((format_sequence(seq), Arc::clone(line))),
+        Binding::Action(_) => None,
+      })
       .collect()
   }
 
@@ -395,13 +458,13 @@ impl Keymap {
   pub fn continuations(&self) -> Vec<(String, Continuation)> {
     let depth = self.pending.len();
     let mut next: BTreeMap<String, Continuation> = BTreeMap::new();
-    for (seq, action) in self.bindings.values() {
+    for (seq, binding) in self.bindings.values() {
       if seq.len() <= depth || seq[..depth] != self.pending[..] {
         continue;
       }
       let key = seq[depth].to_string();
       if seq.len() == depth + 1 {
-        next.insert(key, Continuation::Action(*action));
+        next.insert(key, binding.clone().into());
       } else if let Continuation::Group(n) = next.entry(key).or_insert(Continuation::Group(0)) {
         *n += 1;
       }
@@ -436,8 +499,8 @@ impl Keymap {
 
   fn resolve(&self) -> KeyResult {
     let id = seq_id(&self.pending);
-    if let Some((_, action)) = self.bindings.get(&id) {
-      return KeyResult::Action(*action);
+    if let Some((_, binding)) = self.bindings.get(&id) {
+      return binding.clone().into();
     }
     let is_prefix = self
       .bindings

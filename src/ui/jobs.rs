@@ -14,7 +14,7 @@ use crate::app::App;
 use crate::config::Theme;
 use crate::fs::meta::{format_mtime, human_size};
 use crate::fs::ops::Stat;
-use crate::jobs::{Job, format_duration};
+use crate::jobs::{Job, JobKind, format_duration};
 
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const BAR: &str = "━";
@@ -110,6 +110,13 @@ fn pause_hint(job: &Job) -> &'static str {
 fn stats(job: &Job, binary: bool) -> String {
   let p = &job.progress;
   let mut parts = Vec::new();
+  if job.kind == JobKind::Shell {
+    // A shell task has no counts or sizes, only the time it has been running.
+    return job
+      .started
+      .map(|t| format!("running for {}", format_duration(t.elapsed())))
+      .unwrap_or_default();
+  }
   if let Some(total) = p.files_total {
     let unit = job.kind.unit();
     parts.push(format!("{}/{total} {unit}", p.files_done.min(total)));
@@ -183,14 +190,23 @@ fn render_single(buf: &mut Buffer, body: Rect, app: &App, job: &Job) {
     Style::new().fg(verb_color).add_modifier(Modifier::BOLD),
   ));
   let cells = (area.width as usize / 3).clamp(8, 24);
-  let keys = [("b", "background"), ("p", pause_hint(job)), ("x", "cancel")];
+  let keys: &[(&str, &str)] = if job.log.is_some() {
+    &[
+      ("l", "log"),
+      ("b", "background"),
+      ("p", pause_hint(job)),
+      ("x", "cancel"),
+    ]
+  } else {
+    &[("b", "background"), ("p", pause_hint(job)), ("x", "cancel")]
+  };
   let inner = frame(
     buf,
     area,
     theme.border.0,
     title,
     status_line(job, theme, cells),
-    hints(theme, &keys, accent),
+    hints(theme, keys, accent),
     Padding::new(2, 2, 1, 1),
   );
   let width = inner.width as usize;
@@ -200,13 +216,22 @@ fn render_single(buf: &mut Buffer, body: Rect, app: &App, job: &Job) {
     job.progress.current.clone()
   };
   let dim = Style::new().fg(theme.dim.0);
-  let mut lines = vec![
-    (
-      current,
-      Style::new().fg(theme.fg.0).add_modifier(Modifier::BOLD),
-    ),
-    (stats(job, app.config.binary_size_prefix), dim),
-  ];
+  let mut lines = vec![(
+    current,
+    Style::new().fg(theme.fg.0).add_modifier(Modifier::BOLD),
+  )];
+  if job.kind == JobKind::Shell && !job.progress.current.is_empty() {
+    // The command above its last line of output.
+    lines.insert(
+      0,
+      (
+        job.what.clone(),
+        Style::new().fg(theme.fg.0).add_modifier(Modifier::BOLD),
+      ),
+    );
+    lines[1].1 = Style::new().fg(theme.fg.0);
+  }
+  lines.push((stats(job, app.config.binary_size_prefix), dim));
   if let Some(dest) = &job.dest {
     lines.push((format!("→ {}/", app.short_path(dest)), dim));
   }
@@ -249,12 +274,11 @@ fn render_list(buf: &mut Buffer, body: Rect, app: &App) {
   }
   let status = Line::styled(format!(" {} ", counts.join(" · ")), dim);
   let pause = jobs.selected_job().map_or("pause", pause_hint);
-  let keys = [
-    ("j/k", "select"),
-    ("p", pause),
-    ("x", "cancel"),
-    ("esc", "hide"),
-  ];
+  let mut keys = vec![("j/k", "select")];
+  if jobs.selected_job().is_some_and(|j| j.log.is_some()) {
+    keys.push(("l", "log"));
+  }
+  keys.extend([("p", pause), ("x", "cancel"), ("esc", "hide")]);
   let inner = frame(
     buf,
     area,
@@ -554,7 +578,9 @@ fn render_toasts(buf: &mut Buffer, body: Rect, app: &App) {
     let title = format!("{mark} {}", toast.title);
     let detail = format!(" · {}", toast.detail);
     let full = display_width(&title) + 1 + display_width(&toast.what) + display_width(&detail);
-    let max = body.width.saturating_sub(6) as usize;
+    // Room for the border and padding (4), the gap to the right edge (2) and the cleared
+    // cell on each side (2).
+    let max = body.width.saturating_sub(8) as usize;
     let width = full.min(max);
     // The task's name gives way first.
     let what_w = width.saturating_sub(display_width(&title) + 1 + display_width(&detail));

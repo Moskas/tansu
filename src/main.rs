@@ -1,4 +1,3 @@
-use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -10,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use tansu::app::{App, Command};
 use tansu::cli::{Args, USAGE};
 use tansu::config::Config;
+use tansu::console::History;
 use tansu::event::{self, Event, InputHandle};
 use tansu::fs::meta;
 use tansu::graphics::ImageEncoder;
@@ -43,7 +43,8 @@ fn main() -> Result<()> {
 
   meta::init_timezone();
   let (config, mut warnings) = Config::load(Config::default_path().as_deref());
-  let (keymap, key_warnings) = Keymap::with_overrides(&config.keys);
+  let (keymap, key_warnings) =
+    Keymap::with_overrides(&config.keys, |name| config.commands.contains_key(name));
   warnings.extend(key_warnings);
   let dirs = directories::BaseDirs::new();
   let home = dirs.as_ref().map(|d| d.home_dir().to_path_buf());
@@ -52,6 +53,15 @@ fn main() -> Result<()> {
   app.chooser = choose_file.is_some() || choose_files.is_some();
   // $XDG_DATA_HOME/Trash, the home trash of the freedesktop.org specification.
   app.trash_dir = dirs.as_ref().map(|d| d.data_dir().join("Trash"));
+  let history_file = dirs
+    .as_ref()
+    .filter(|_| app.config.save_console_history)
+    .map(|d| d.data_dir().join("tansu").join("history"));
+  if let Some(file) = &history_file
+    && let Ok(text) = std::fs::read_to_string(file)
+  {
+    app.history = History::new(text.lines().map(str::to_string));
+  }
   if let Some(first) = warnings.first() {
     let more = warnings.len() - 1;
     let suffix = if more > 0 {
@@ -103,12 +113,10 @@ fn main() -> Result<()> {
             path,
             foreground: true,
           } => run_foreground(&mut guard, &input, &mut app, &argv, &path)?,
-          Command::Shell {
-            script,
-            cwd,
-            mode: mode @ (ShellMode::Foreground { .. } | ShellMode::Pager),
-            program,
-          } => run_shell(&mut guard, &input, &mut app, &script, &cwd, mode, &program)?,
+          cmd @ Command::Shell {
+            mode: ShellMode::Foreground { .. } | ShellMode::Pager,
+            ..
+          } => run_shell(&mut guard, &input, &mut app, cmd)?,
           cmd => {
             if let Some(err) = runtime.execute(cmd) {
               app.set_error(err);
@@ -140,6 +148,18 @@ fn main() -> Result<()> {
     }
   }
   drop(guard);
+  // Shell task logs live in the runtime directory; tasks still running keep running.
+  for log in app.jobs.log_files() {
+    let _ = std::fs::remove_file(log);
+  }
+  if let Some(file) = &history_file
+    && let Err(e) = save_history(file, app.history.entries())
+  {
+    eprintln!(
+      "tansu: cannot save the command history to {}: {e}",
+      file.display()
+    );
+  }
 
   // Like ranger: the chooser files are written only when something was chosen, so a caller
   // can tell a cancelled pick from an empty file it created itself.
@@ -203,6 +223,25 @@ fn resolve_start(path: Option<PathBuf>) -> Result<(PathBuf, Option<String>)> {
   Ok((parent, name))
 }
 
+/// Writes the command-line history, one line per entry, readable only by the user.
+fn save_history(file: &Path, entries: &[String]) -> std::io::Result<()> {
+  use std::io::Write;
+  use std::os::unix::fs::OpenOptionsExt;
+  if let Some(dir) = file.parent() {
+    std::fs::create_dir_all(dir)?;
+  }
+  let mut out = std::fs::OpenOptions::new()
+    .write(true)
+    .create(true)
+    .truncate(true)
+    .mode(0o600)
+    .open(file)?;
+  for line in entries {
+    writeln!(out, "{line}")?;
+  }
+  Ok(())
+}
+
 /// Runs a program on the terminal with tansu suspended, then restores the UI.
 fn run_foreground(
   guard: &mut TerminalGuard,
@@ -213,7 +252,7 @@ fn run_foreground(
 ) -> Result<()> {
   let program = argv.first().map_or("", String::as_str);
   suspend_for(guard, input, app, program, || {
-    opener::run_foreground(argv, path)
+    (opener::run_foreground(argv, path), Ok(Vec::new()))
   })
 }
 
@@ -222,17 +261,33 @@ fn run_shell(
   guard: &mut TerminalGuard,
   input: &InputHandle,
   app: &mut App,
-  script: &OsStr,
-  cwd: &Path,
-  mode: ShellMode,
-  program: &str,
+  cmd: Command,
 ) -> Result<()> {
-  suspend_for(guard, input, app, program, || match mode {
-    ShellMode::Pager => opener::run_shell_paged(script, cwd),
-    ShellMode::Foreground { wait_enter } => opener::run_shell(script, cwd, wait_enter),
-    _ => opener::run_shell(script, cwd, false),
+  let Command::Shell {
+    script,
+    cwd,
+    mode,
+    program,
+    env,
+  } = cmd
+  else {
+    return Ok(());
+  };
+  suspend_for(guard, input, app, &program, || {
+    opener::with_command_file(&env, |env| match mode {
+      ShellMode::Pager => opener::run_shell_paged(&script, &cwd, env),
+      ShellMode::Foreground { wait_enter } => opener::run_shell(&script, &cwd, env, wait_enter),
+      _ => opener::run_shell(&script, &cwd, env, false),
+    })
   })
 }
+
+/// What a program run on the terminal returned, and the command lines it wrote into
+/// `$TANSU_CMD`.
+type Ran = (
+  Result<ExitStatus, opener::OpenError>,
+  Result<Vec<String>, String>,
+);
 
 /// Hands the terminal to `run` with tansu suspended, then restores the UI.
 fn suspend_for(
@@ -240,15 +295,15 @@ fn suspend_for(
   input: &InputHandle,
   app: &mut App,
   program: &str,
-  run: impl FnOnce() -> Result<ExitStatus, opener::OpenError>,
+  run: impl FnOnce() -> Ran,
 ) -> Result<()> {
   input.pause();
-  let result = guard.suspended(run);
+  let ran = guard.suspended(run);
   input.resume();
-  let result = result?.map_err(|e| e.to_string());
+  let (result, commands) = ran?;
   // Resizes while the program ran were not seen.
   let size = guard.terminal.size()?;
   app.set_size(size.width, size.height);
-  app.on_foreground_exit(program, result);
+  app.on_foreground_exit(program, result.map_err(|e| e.to_string()), commands);
   Ok(())
 }

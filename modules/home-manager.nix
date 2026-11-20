@@ -45,12 +45,20 @@ in
             J = "half_page_down";
             K = "half_page_up";
             "<BS>" = "none";
+            ge = "edit";
+          };
+          commands = {
+            edit = {
+              run = "shell $EDITOR %s";
+              description = "Edit the selection";
+            };
           };
         }
       '';
       description = ''
         Configuration written to {file}`$XDG_CONFIG_HOME/tansu/config.toml`. Every key is
-        optional; see the README for the available keys, theme colors and action names.
+        optional; see the README for the available keys, theme colors, action names and
+        custom commands.
         Nothing is written while this is empty, so a hand-written file is left alone.
       '';
     };

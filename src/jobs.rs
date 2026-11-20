@@ -32,6 +32,8 @@ pub enum JobKind {
   Delete,
   Trash,
   Extract,
+  /// A shell command run with `:shell -b`.
+  Shell,
 }
 
 impl JobKind {
@@ -43,6 +45,7 @@ impl JobKind {
       JobKind::Delete => "Deleting",
       JobKind::Trash => "Trashing",
       JobKind::Extract => "Extracting",
+      JobKind::Shell => "Running",
     }
   }
 
@@ -54,6 +57,7 @@ impl JobKind {
       JobKind::Delete => "Delete",
       JobKind::Trash => "Trash",
       JobKind::Extract => "Extract",
+      JobKind::Shell => "Shell",
     }
   }
 
@@ -65,6 +69,7 @@ impl JobKind {
       JobKind::Delete => "Deleted",
       JobKind::Trash => "Trashed",
       JobKind::Extract => "Extracted",
+      JobKind::Shell => "Finished",
     }
   }
 
@@ -73,7 +78,7 @@ impl JobKind {
   pub fn unit(self) -> &'static str {
     match self {
       JobKind::Copy | JobKind::Extract => "files",
-      JobKind::Move | JobKind::Delete | JobKind::Trash => "items",
+      JobKind::Move | JobKind::Delete | JobKind::Trash | JobKind::Shell => "items",
     }
   }
 
@@ -130,6 +135,10 @@ impl Control {
 
   pub fn is_cancelled(&self) -> bool {
     self.cancelled.load(Ordering::Relaxed)
+  }
+
+  pub fn is_paused(&self) -> bool {
+    *self.paused.lock().unwrap_or_else(|e| e.into_inner())
   }
 
   /// Waits while the task is paused. True when it should stop.
@@ -302,6 +311,8 @@ pub struct Job {
   /// The paste to run, for one whose conflicts need answers.
   pub request: Option<PasteRequest>,
   pub prompt: Option<ConflictPrompt>,
+  /// Where a shell task's output goes, once the runtime has created the file.
+  pub log: Option<PathBuf>,
   /// Bytes per second, smoothed.
   rate: f64,
   sample: Option<(Instant, u64)>,
@@ -376,9 +387,39 @@ pub struct Jobs {
   /// Shown with `w`, without waiting for [`SHOW_AFTER`].
   pub forced: bool,
   pub toasts: Vec<Toast>,
+  /// Logs of finished shell tasks, the latest last, for `:tasklog`.
+  pub finished_logs: Vec<FinishedLog>,
 }
 
+/// The output of a finished shell task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinishedLog {
+  /// The command line, as shown in the task list.
+  pub what: String,
+  pub log: PathBuf,
+  pub ok: bool,
+}
+
+/// Logs of finished shell tasks kept for `:tasklog`.
+pub const MAX_FINISHED_LOGS: usize = 20;
+
 impl Jobs {
+  /// Keeps a finished task's log. Returns the logs that no longer fit, oldest first, whose
+  /// files can go.
+  pub fn keep_log(&mut self, log: FinishedLog) -> Vec<PathBuf> {
+    self.finished_logs.push(log);
+    let excess = self.finished_logs.len().saturating_sub(MAX_FINISHED_LOGS);
+    self.finished_logs.drain(..excess).map(|l| l.log).collect()
+  }
+
+  /// Every log file still known: of running tasks and of finished ones.
+  pub fn log_files(&self) -> Vec<PathBuf> {
+    let running = self.list.iter().filter_map(|j| j.log.clone());
+    running
+      .chain(self.finished_logs.iter().map(|l| l.log.clone()))
+      .collect()
+  }
+
   pub fn add(&mut self, kind: JobKind, what: String, dest: Option<PathBuf>, tab: usize) -> JobId {
     self.next_id += 1;
     self.list.push(Job {
@@ -394,6 +435,7 @@ impl Jobs {
       cancelled: false,
       request: None,
       prompt: None,
+      log: None,
       rate: 0.0,
       sample: None,
     });

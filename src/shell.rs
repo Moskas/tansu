@@ -18,6 +18,8 @@ pub enum ShellMode {
   Detached,
   /// Detached in a new terminal window (`-t`).
   Terminal,
+  /// In the background as a task, with its output kept in a log (`-b`).
+  Task,
 }
 
 /// The parsed flags of a `:shell` command.
@@ -31,7 +33,7 @@ pub struct ShellFlags {
 }
 
 impl ShellFlags {
-  /// Interprets ranger's flags. An uppercase flag cancels its lowercase one; unknown flags
+  /// Interprets ranger's flags. `b` (a task) is tansu's own; it gives way to `t`, `p` and `r`. An uppercase flag cancels its lowercase one; unknown flags
   /// and `c` (only meaningful with multiple selected files) are ignored, as in ranger.
   pub fn parse(flags: &str) -> ShellFlags {
     let mut set: Vec<char> = flags.chars().collect();
@@ -63,6 +65,8 @@ impl ShellFlags {
     } else if sudo {
       // sudo may prompt for a password, so it always gets the terminal.
       ShellMode::Foreground { wait_enter }
+    } else if has('b') {
+      ShellMode::Task
     } else if has('f') {
       ShellMode::Detached
     } else if !toggle_ui {

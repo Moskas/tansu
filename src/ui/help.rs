@@ -11,13 +11,18 @@ use crate::app::App;
 /// Centered overlay listing the current bindings (generated from the keymap).
 pub fn render(buf: &mut Buffer, area: Rect, app: &App) {
   let theme = &app.config.theme;
-  let rows: Vec<(String, &str)> = Action::ALL
-    .iter()
-    .filter_map(|&a| {
-      let keys = app.keymap.keys_for(a);
-      (!keys.is_empty()).then(|| (keys.join(" "), a.description()))
-    })
+  // Bindings to command lines come first: the overlay does not scroll, and they are the
+  // user's own.
+  let mut rows: Vec<(String, String)> = app
+    .keymap
+    .line_bindings()
+    .into_iter()
+    .map(|(keys, line)| (keys, app.line_description(&line)))
     .collect();
+  rows.extend(Action::ALL.iter().filter_map(|&a| {
+    let keys = app.keymap.keys_for(a);
+    (!keys.is_empty()).then(|| (keys.join(" "), a.description().to_string()))
+  }));
   let key_w = rows
     .iter()
     .map(|(k, _)| display_width(k))
@@ -46,7 +51,7 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App) {
       let pad = key_w - display_width(keys) + 2;
       Line::from(vec![
         Span::styled(format!(" {keys}{}", " ".repeat(pad)), key_style),
-        Span::styled(*desc, desc_style),
+        Span::styled(desc.as_str(), desc_style),
       ])
     })
     .collect();

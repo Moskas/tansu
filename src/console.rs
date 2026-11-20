@@ -190,6 +190,8 @@ pub enum ConsoleCommand {
   /// Create a directory (`dir`) or an empty file at this path, relative to the current
   /// directory and taken verbatim.
   Create { name: String, dir: bool },
+  /// Open the log of the `n`-th most recently finished shell task (1 is the latest).
+  TaskLog(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -206,6 +208,8 @@ pub enum ConsoleError {
   UnknownSortKey(String),
   #[error("tab_open: missing or invalid tab number `{0}` (1 to 9)")]
   BadTabNumber(String),
+  #[error("tasklog: invalid number `{0}` (1 is the latest log)")]
+  BadTaskLogNumber(String),
   #[error("{command}: unexpected argument `{arg}`")]
   UnexpectedArgument { command: String, arg: String },
 }
@@ -241,6 +245,9 @@ pub const SEARCH: &str = "search";
 /// the command line as `mkdir ` / `touch `.
 pub const MKDIR: &str = "mkdir";
 pub const TOUCH: &str = "touch";
+
+/// Name of the command that opens a finished shell task's log.
+pub const TASKLOG: &str = "tasklog";
 
 /// Flag of `open_with` that detaches the program instead of suspending tansu for it.
 pub const DETACH_FLAG: &str = "-d";
@@ -310,8 +317,51 @@ pub fn parse(line: &str) -> Option<Result<ConsoleCommand, ConsoleError>> {
     Z => Some(Ok(ConsoleCommand::Zoxide(
       words.map(str::to_string).collect(),
     ))),
+    TASKLOG => Some(parse_task_log(words)),
     _ => Some(parse_words(name, words)),
   }
+}
+
+/// Whether `name` is a built-in command, which a custom command cannot replace.
+pub fn is_builtin(name: &str) -> bool {
+  !matches!(parse(name), None | Some(Err(ConsoleError::Unknown(_))))
+}
+
+/// Splits a line into its first word and the rest, with the separating whitespace removed.
+pub fn split_command(line: &str) -> (&str, &str) {
+  let line = line.trim_start();
+  let end = line.find(char::is_whitespace).unwrap_or(line.len());
+  (&line[..end], rest_after_command(line))
+}
+
+/// Replaces `%a` (or `%{a}`) in a custom command's line with the arguments typed after the
+/// command's name, as typed. `%%` is kept for the `:shell` macros to turn into `%`, and a
+/// longer name such as `%ab` is left alone, as `:shell` does.
+pub fn expand_args(line: &str, args: &str) -> String {
+  let mut out = String::with_capacity(line.len() + args.len());
+  let mut rest = line;
+  while let Some(at) = rest.find('%') {
+    out.push_str(&rest[..at]);
+    let after = &rest[at + 1..];
+    if let Some(after) = after.strip_prefix('%') {
+      out.push_str("%%");
+      rest = after;
+    } else if let Some(after) = after.strip_prefix("{a}") {
+      out.push_str(args);
+      rest = after;
+    } else if let Some(after) = after
+      .strip_prefix('a')
+      .filter(|a| !a.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+    {
+      out.push_str(args);
+      rest = after;
+    } else {
+      out.push('%');
+      rest = after;
+    }
+  }
+  out.push_str(rest);
+  out
 }
 
 /// The line after its first word, with the separating whitespace removed.
@@ -331,11 +381,15 @@ pub struct CompletionSource<'a> {
   pub subdirs: &'a dyn Fn(&str) -> Vec<String>,
   /// Names of the listed entries in the current directory, for `shell` arguments.
   pub files: &'a dyn Fn() -> Vec<String>,
+  /// Names of the custom commands from the config.
+  pub user_commands: &'a [&'a str],
+  /// How many finished shell task logs are kept, for `tasklog`.
+  pub task_logs: usize,
 }
 
 /// Names offered for the first word. Commands that take an argument end in a space so the
 /// next Tab goes on to complete the argument.
-fn command_names() -> Vec<String> {
+fn command_names(user_commands: &[&str]) -> Vec<String> {
   let mut names: Vec<String> = Action::ALL
     .iter()
     .map(|a| a.name())
@@ -343,9 +397,10 @@ fn command_names() -> Vec<String> {
     .map(str::to_string)
     .collect();
   let with_argument = [
-    CD, MKDIR, OPEN_WITH, RENAME, SEARCH, SHELL, SORT, TAB_OPEN, TOUCH, Z,
+    CD, MKDIR, OPEN_WITH, RENAME, SEARCH, SHELL, SORT, TAB_OPEN, TOUCH, TASKLOG, Z,
   ];
   names.extend(with_argument.map(|n| format!("{n} ")));
+  names.extend(user_commands.iter().map(|n| n.to_string()));
   names.sort();
   names.dedup();
   names
@@ -359,7 +414,7 @@ fn command_names() -> Vec<String> {
 pub fn completions(line: &str, src: &CompletionSource) -> Vec<String> {
   let line = line.trim_start();
   let Some(split) = line.find(char::is_whitespace) else {
-    return command_names()
+    return command_names(src.user_commands)
       .into_iter()
       .filter(|n| n.starts_with(line))
       .collect();
@@ -387,6 +442,11 @@ pub fn completions(line: &str, src: &CompletionSource) -> Vec<String> {
       .map(|k| k.name())
       .filter(|k| k.starts_with(arg))
       .map(|k| format!("{SORT} {k}"))
+      .collect(),
+    TASKLOG => (1..=src.task_logs)
+      .map(|n| n.to_string())
+      .filter(|n| n.starts_with(arg))
+      .map(|n| format!("{TASKLOG} {n}"))
       .collect(),
     TAB_OPEN => (1..=9)
       .map(|n| n.to_string())
@@ -452,6 +512,26 @@ fn complete_shell(line: &str, arg: &str, src: &CompletionSource) -> Vec<String> 
     .collect()
 }
 
+/// `tasklog [n]`: no number is the latest log.
+fn parse_task_log<'a>(
+  mut args: impl Iterator<Item = &'a str>,
+) -> Result<ConsoleCommand, ConsoleError> {
+  let n = match args.next() {
+    None => 1,
+    Some(word) => match word.parse::<usize>() {
+      Ok(n) if n >= 1 => n,
+      _ => return Err(ConsoleError::BadTaskLogNumber(word.to_string())),
+    },
+  };
+  if let Some(arg) = args.next() {
+    return Err(ConsoleError::UnexpectedArgument {
+      command: TASKLOG.to_string(),
+      arg: arg.to_string(),
+    });
+  }
+  Ok(ConsoleCommand::TaskLog(n))
+}
+
 fn parse_words<'a>(
   name: &str,
   mut args: impl Iterator<Item = &'a str>,
@@ -497,4 +577,91 @@ fn parse_words<'a>(
     });
   }
   Ok(ConsoleCommand::Action(action))
+}
+
+/// Lines kept in the command-line history.
+pub const HISTORY_SIZE: usize = 100;
+
+/// Lines run from the command line, oldest first, and the state of stepping through them
+/// with `<Up>` and `<Down>`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct History {
+  entries: Vec<String>,
+  browse: Option<Browse>,
+}
+
+/// Where stepping through the history is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Browse {
+  /// Index of the entry shown; `entries.len()` is the line being typed.
+  index: usize,
+  /// What was typed before stepping began. Only entries starting with it are visited, and it
+  /// comes back when stepping past the newest one.
+  draft: String,
+}
+
+impl History {
+  /// A history holding `entries`, oldest first; blank lines are dropped and only the newest
+  /// [`HISTORY_SIZE`] are kept.
+  pub fn new(entries: impl IntoIterator<Item = String>) -> History {
+    let mut history = History::default();
+    for line in entries {
+      history.push(&line);
+    }
+    history
+  }
+
+  pub fn entries(&self) -> &[String] {
+    &self.entries
+  }
+
+  /// Adds a line that was run. A line already in the history moves to the end instead of
+  /// being kept twice. Stepping starts over.
+  pub fn push(&mut self, line: &str) {
+    self.browse = None;
+    let line = line.trim();
+    if line.is_empty() {
+      return;
+    }
+    self.entries.retain(|e| e != line);
+    self.entries.push(line.to_string());
+    let excess = self.entries.len().saturating_sub(HISTORY_SIZE);
+    self.entries.drain(..excess);
+  }
+
+  /// Forgets where stepping was, after the line was edited or the command line closed.
+  pub fn reset(&mut self) {
+    self.browse = None;
+  }
+
+  /// The next older entry starting with what was typed (`current` when stepping begins),
+  /// skipping ones equal to the line shown. `None` when there is none.
+  pub fn older(&mut self, current: &str) -> Option<String> {
+    let browse = self.browse.get_or_insert_with(|| Browse {
+      index: self.entries.len(),
+      draft: current.to_string(),
+    });
+    let found = self.entries[..browse.index]
+      .iter()
+      .rposition(|e| e.starts_with(&browse.draft) && e != current)?;
+    browse.index = found;
+    Some(self.entries[found].clone())
+  }
+
+  /// The next newer entry starting with what was typed, or that typed line itself after the
+  /// newest one. `None` when not stepping.
+  pub fn newer(&mut self, current: &str) -> Option<String> {
+    let browse = self.browse.as_mut()?;
+    let start = (browse.index + 1).min(self.entries.len());
+    let next = self.entries[start..]
+      .iter()
+      .position(|e| e.starts_with(&browse.draft) && e != current);
+    match next {
+      Some(offset) => {
+        browse.index = start + offset;
+        Some(self.entries[browse.index].clone())
+      }
+      None => self.browse.take().map(|b| b.draft),
+    }
+  }
 }

@@ -54,5 +54,7 @@ most `max_entries`.
   next previewer.
 - Actions: add a variant to `Action` with a name and description; it is then bindable from
   the config and shown in the help overlay.
-- A scripting runtime can later hook in at the same seams: produce `Action`s, register
-  previewers, and consume `Command`s.
+- Custom commands: keys bind to command lines, `[commands]` names lists of them, and shell
+  commands get tansu's state in `TANSU_*` variables and send command lines back through the
+  `$TANSU_CMD` file (`opener::CommandFile`). There is no embedded scripting language; see
+  [Custom commands](commands.md).
