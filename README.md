@@ -3,14 +3,40 @@
 A terminal file manager with Miller columns, in the spirit of ranger. Written in Rust with
 ratatui and crossterm.
 
-| | |
-|:-:|:-:|
-| ![Miller columns](docs/screenshots/overview.png) | ![Image preview](docs/screenshots/image-preview.png) |
-| Miller columns with icons and git status | Image preview with EXIF details |
-| ![Archive preview](docs/screenshots/archive-preview.png) | ![Tabs](docs/screenshots/tabs.png) |
-| Archive listing and extraction target | Tabs with their activity in the header |
-| ![Tasks](docs/screenshots/tasks.png) | ![Which-key](docs/screenshots/which-key.png) |
-| Background tasks with progress | Key hints for unfinished sequences |
+The name comes from the tansu (箪笥), the traditional Japanese chest of drawers.
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/overview.png" alt="Miller columns"><br>
+      Miller columns with icons and git status
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/image-preview.png" alt="Image preview"><br>
+      Image preview with EXIF details
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="docs/screenshots/archive-preview.png" alt="Archive preview"><br>
+      Archive listing and extraction target
+    </td>
+    <td align="center">
+      <img src="docs/screenshots/tabs.png" alt="Tabs"><br>
+      Tabs with their activity in the header
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="docs/screenshots/tasks.png" alt="Tasks"><br>
+      Background tasks with progress
+    </td>
+    <td align="center">
+      <img src="docs/screenshots/which-key.png" alt="Which-key"><br>
+      Key hints for unfinished sequences
+    </td>
+  </tr>
+</table>
 
 ## Features
 
