@@ -19,6 +19,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 
 pub type Tui = Terminal<CrosstermBackend<BufWriter<TermOut>>>;
 
@@ -85,29 +86,19 @@ fn child_stdio(inherited_is_terminal: bool) -> Stdio {
 /// Runs `f` with the terminal as stdin and stdout, for code that only talks to stdio (the
 /// graphics query of ratatui-image). The redirected descriptors are put back afterwards.
 ///
-/// Must not be the first use of crossterm's input, which would then keep reading fd 0
-/// after it is restored; [`TerminalGuard::new`] makes that use first.
+/// `f` must not start crossterm's input, which picks its descriptor once and would keep
+/// reading fd 0 after it is restored.
 pub fn with_tty_stdio<T>(f: impl FnOnce() -> T) -> T {
-  with_tty_fds(true, f)
-}
-
-/// Like [`with_tty_stdio`] for stdout alone: crossterm writes its cursor position query
-/// (`ESC [ 6 n`) there, whatever the backend writes to.
-fn with_tty_stdout<T>(f: impl FnOnce() -> T) -> T {
-  with_tty_fds(false, f)
-}
-
-fn with_tty_fds<T>(stdin: bool, f: impl FnOnce() -> T) -> T {
   let Some(tty) = tty() else {
     return f();
   };
   let _ = io::stdout().flush();
   let mut saved: Vec<(i32, OwnedFd)> = Vec::new();
-  for (fd, swap) in [
-    (libc::STDIN_FILENO, stdin && !io::stdin().is_terminal()),
-    (libc::STDOUT_FILENO, !io::stdout().is_terminal()),
+  for (fd, is_terminal) in [
+    (libc::STDIN_FILENO, io::stdin().is_terminal()),
+    (libc::STDOUT_FILENO, io::stdout().is_terminal()),
   ] {
-    if !swap {
+    if is_terminal {
       continue;
     }
     // SAFETY: stdin and stdout stay open for the life of the process.
@@ -154,9 +145,7 @@ impl TerminalGuard {
       }
     };
     terminal.hide_cursor().ok();
-    // `clear` queries the cursor position, which also starts crossterm's input on the
-    // terminal, so it has to come before any `with_tty_stdio`.
-    with_tty_stdout(|| terminal.clear()).ok();
+    clear(&mut terminal).ok();
     Ok(TerminalGuard {
       terminal,
       mouse: false,
@@ -184,9 +173,20 @@ impl TerminalGuard {
       self.enable_mouse()?;
     }
     self.terminal.hide_cursor().ok();
-    with_tty_stdout(|| self.terminal.clear()).context("clearing terminal")?;
+    clear(&mut self.terminal).context("clearing terminal")?;
     Ok(out)
   }
+}
+
+/// Clears the screen and forces a full redraw on the next frame, at the current size.
+///
+/// `Terminal::clear` also saves and restores the cursor position, which asks the terminal
+/// for it (`ESC [ 6 n`) and fails after two seconds on one that does not answer. A
+/// fullscreen UI has no cursor position to keep, and for a fullscreen viewport `resize`
+/// clears the screen and resets the back buffer without the query.
+fn clear(terminal: &mut Tui) -> io::Result<()> {
+  let size = terminal.size()?;
+  terminal.resize(Rect::new(0, 0, size.width, size.height))
 }
 
 impl Drop for TerminalGuard {
