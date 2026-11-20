@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::{Arc, mpsc};
@@ -7,6 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 
 use tansu::app::{App, Command};
+use tansu::cli::{Args, USAGE};
 use tansu::config::Config;
 use tansu::event::{self, Event, InputHandle};
 use tansu::fs::meta;
@@ -21,29 +23,23 @@ use tansu::ui;
 
 const TICK: Duration = Duration::from_millis(250);
 
-const USAGE: &str = "usage: tansu [PATH]
-
-Opens a three-column file manager at PATH (default: current directory).
-Press ? inside tansu for key bindings.";
-
 fn main() -> Result<()> {
-  let mut args = std::env::args_os().skip(1);
-  let arg = args.next();
-  if args.next().is_some() {
-    bail!("too many arguments\n\n{USAGE}");
+  let args = match Args::parse(std::env::args_os().skip(1)) {
+    Ok(args) => args,
+    Err(e) => bail!("{e}\n\n{USAGE}"),
+  };
+  if args.help {
+    println!("{USAGE}");
+    return Ok(());
   }
-  match arg.as_ref().and_then(|a| a.to_str()) {
-    Some("-h" | "--help") => {
-      println!("{USAGE}");
-      return Ok(());
-    }
-    Some("-V" | "--version") => {
-      println!("tansu {}", env!("CARGO_PKG_VERSION"));
-      return Ok(());
-    }
-    _ => {}
+  if args.version {
+    println!("tansu {}", env!("CARGO_PKG_VERSION"));
+    return Ok(());
   }
-  let (start, select) = resolve_start(arg.map(PathBuf::from))?;
+  let choose_file = args.choose_file.map(output_path).transpose()?;
+  let choose_files = args.choose_files.map(output_path).transpose()?;
+  let choose_dir = args.choose_dir.map(output_path).transpose()?;
+  let (start, select) = resolve_start(args.path)?;
 
   meta::init_timezone();
   let (config, mut warnings) = Config::load(Config::default_path().as_deref());
@@ -53,6 +49,7 @@ fn main() -> Result<()> {
   let home = dirs.as_ref().map(|d| d.home_dir().to_path_buf());
 
   let mut app = App::new(config, keymap, start, select, meta::user_at_host(), home);
+  app.chooser = choose_file.is_some() || choose_files.is_some();
   // $XDG_DATA_HOME/Trash, the home trash of the freedesktop.org specification.
   app.trash_dir = dirs.as_ref().map(|d| d.data_dir().join("Trash"));
   if let Some(first) = warnings.first() {
@@ -142,7 +139,46 @@ fn main() -> Result<()> {
       break;
     }
   }
+  drop(guard);
+
+  // Like ranger: the chooser files are written only when something was chosen, so a caller
+  // can tell a cancelled pick from an empty file it created itself.
+  if let Some(chosen) = &app.chosen {
+    if let Some(file) = &choose_file {
+      write_output(file, chosen.file.as_os_str().as_bytes())?;
+    }
+    if let Some(file) = &choose_files {
+      let mut list = Vec::new();
+      for path in &chosen.files {
+        list.extend_from_slice(path.as_os_str().as_bytes());
+        list.push(b'\n');
+      }
+      write_output(file, &list)?;
+    }
+  }
+  if let Some(file) = &choose_dir {
+    write_output(file, app.cwd.as_os_str().as_bytes())?;
+  }
   Ok(())
+}
+
+/// Makes an output file argument absolute and rejects one that exists but is not writable,
+/// before the UI starts.
+fn output_path(path: PathBuf) -> Result<PathBuf> {
+  let path =
+    std::path::absolute(&path).with_context(|| format!("cannot resolve {}", path.display()))?;
+  if path.exists() {
+    // Opening for append checks write permission without changing the file.
+    std::fs::OpenOptions::new()
+      .append(true)
+      .open(&path)
+      .with_context(|| format!("cannot write to {}", path.display()))?;
+  }
+  Ok(path)
+}
+
+fn write_output(path: &Path, contents: &[u8]) -> Result<()> {
+  std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))
 }
 
 /// Returns the directory to open and, if `path` is a file, its name to select.

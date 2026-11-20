@@ -1609,3 +1609,45 @@ fn a_stopped_overwrite_keeps_the_file_it_would_replace() {
     6 * 1024 * 1024
   );
 }
+
+// ---- command line arguments ----
+
+fn parse_args(args: &[&str]) -> Result<tansu::cli::Args, String> {
+  tansu::cli::Args::parse(args.iter().map(std::ffi::OsString::from))
+}
+
+#[test]
+fn args_take_ranger_chooser_options_in_both_forms() {
+  let args = parse_args(&["--choosefile=/tmp/a", "--choosedir", "/tmp/b", "src"]).unwrap();
+  assert_eq!(args.choose_file, Some("/tmp/a".into()));
+  assert_eq!(args.choose_dir, Some("/tmp/b".into()));
+  assert_eq!(args.path, Some("src".into()));
+  let args = parse_args(&["--choosefiles", "out", "--selectfile=x/y"]).unwrap();
+  assert_eq!(args.choose_files, Some("out".into()));
+  assert_eq!(args.path, Some("x/y".into()));
+  assert_eq!(
+    parse_args(&["--", "-dash"]).unwrap().path,
+    Some("-dash".into())
+  );
+}
+
+#[test]
+fn args_reject_unknown_missing_and_repeated() {
+  assert!(
+    parse_args(&["--nope"])
+      .unwrap_err()
+      .contains("unknown option")
+  );
+  assert!(
+    parse_args(&["--choosefile"])
+      .unwrap_err()
+      .contains("needs a value")
+  );
+  assert!(
+    parse_args(&["--choosefile="])
+      .unwrap_err()
+      .contains("needs a value")
+  );
+  assert!(parse_args(&["a", "b"]).unwrap_err().contains("too many"));
+  assert!(parse_args(&["--selectfile=a", "b"]).is_err());
+}

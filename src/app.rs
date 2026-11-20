@@ -288,6 +288,16 @@ pub fn display_name(path: &Path) -> String {
     .unwrap_or_default()
 }
 
+/// The result of opening a file in chooser mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chosen {
+  /// The opened file, for `--choosefile`.
+  pub file: PathBuf,
+  /// For `--choosefiles`, as ranger picks them: the marks left in other directories, then
+  /// the marked or selected entries of the current one.
+  pub files: Vec<PathBuf>,
+}
+
 /// Highest tab number; tabs are numbered 1 to 9 so `<A-1>`..`<A-9>` reach each of them.
 const MAX_TABS: usize = 9;
 
@@ -375,6 +385,11 @@ pub struct App {
   /// Show file metadata instead of the content preview (directories keep their listing).
   pub show_metadata: bool,
   pub should_quit: bool,
+  /// Set when running as a file chooser (`--choosefile`, `--choosefiles`): opening a file
+  /// then records it in `chosen` and quits instead of starting the opener.
+  pub chooser: bool,
+  /// What was chosen, `None` when tansu quit without choosing.
+  pub chosen: Option<Chosen>,
   /// Copy/cut buffer, kept across directory changes.
   pub buffer: Option<FileBuffer>,
   /// Marked entries (`<Space>`, `v`), by full path. Like ranger, marks are kept per directory
@@ -451,6 +466,8 @@ impl App {
       programs: OnceCell::new(),
       show_metadata: false,
       should_quit: false,
+      chooser: false,
+      chosen: None,
       buffer: None,
       marked: HashSet::new(),
       message: None,
@@ -2491,10 +2508,35 @@ impl App {
     };
     if entry.is_dir() {
       self.enter_dir(entry.path, None);
+    } else if self.chooser {
+      self.chosen = Some(Chosen {
+        files: self.chosen_files(),
+        file: entry.path,
+      });
+      self.should_quit = true;
     } else {
       self.set_info(format!("opening {}", entry.name));
       self.commands.push(Command::Open(entry.path));
     }
+  }
+
+  /// See `Chosen::files`.
+  fn chosen_files(&self) -> Vec<PathBuf> {
+    let mut dirs: Vec<&Path> = self
+      .marked
+      .iter()
+      .filter_map(|p| p.parent())
+      .filter(|d| *d != self.cwd)
+      .collect();
+    dirs.sort();
+    dirs.dedup();
+    let mut paths: Vec<PathBuf> = dirs.into_iter().flat_map(|d| self.marked_in(d)).collect();
+    for entry in self.selection() {
+      if !paths.contains(&entry.path) {
+        paths.push(entry.path.clone());
+      }
+    }
+    paths
   }
 
   /// Makes `path` the current directory, recording the change for `:cd -` and zoxide.

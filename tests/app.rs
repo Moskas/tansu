@@ -2866,3 +2866,41 @@ fn uppercase_shell_macros_refer_to_the_next_tab() {
   };
   assert_eq!(script.to_str().unwrap(), format!("echo {a} {b} {b}"));
 }
+
+#[test]
+fn chooser_records_the_opened_file_and_quits() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  app.chooser = true;
+  press(&mut app, "l"); // a directory is entered, not chosen
+  assert_eq!(app.cwd, work.join("alpha"));
+  assert!(!app.should_quit);
+  press(&mut app, "h");
+  press(&mut app, "jjjj<Enter>"); // file10.txt
+  assert!(app.should_quit);
+  assert!(
+    app
+      .take_commands()
+      .iter()
+      .all(|c| !matches!(c, Command::Open(_)))
+  );
+  let chosen = app.chosen.unwrap();
+  assert_eq!(chosen.file, work.join("file10.txt"));
+  assert_eq!(chosen.files, vec![work.join("file10.txt")]);
+}
+
+#[test]
+fn chooser_lists_marks_from_every_directory_then_the_current_ones() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  app.chooser = true;
+  press(&mut app, "l<Space>h"); // mark alpha/a.txt
+  press(&mut app, "jjj<Space>"); // mark file2.txt, cursor on file10.txt
+  press(&mut app, "<Enter>");
+  let chosen = app.chosen.unwrap();
+  assert_eq!(chosen.file, work.join("file10.txt"));
+  assert_eq!(
+    chosen.files,
+    vec![work.join("alpha/a.txt"), work.join("file2.txt")]
+  );
+}

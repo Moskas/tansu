@@ -146,3 +146,38 @@ significant status of their contents (ignored files do not count).
 A directory that is itself a repository root gets a second mark in front, describing its
 branch relative to the upstream: `=` in sync, `>` ahead, `<` behind, `Y` diverged, `⌂` no
 upstream. Status comes from `git status` in the background and is refreshed on `R`.
+
+## File chooser
+
+tansu takes ranger's options for picking files from scripts and other programs:
+
+| Option               | Effect                                                              |
+|----------------------|---------------------------------------------------------------------|
+| `--choosefile=FILE`  | Opening a file writes its path to FILE and quits                    |
+| `--choosefiles=FILE` | Opening a file writes the chosen paths, one per line, and quits     |
+| `--choosedir=FILE`   | On exit, writes the current directory to FILE                       |
+| `--selectfile=PATH`  | Starts with PATH selected, like passing PATH                        |
+
+Options also take their value as a separate argument (`--choosefile FILE`). Entering a
+directory works as usual; only opening a file chooses it, by key, `:open` or double click.
+`--choosefiles` writes the marks left in other directories, then the marked entries of the
+current directory, or the selected one when none are marked. `--choosefile` writes the path
+without a trailing newline, as ranger does.
+
+The chooser files are written only when a file is chosen, so quitting without one leaves
+them untouched; `--choosedir` is written on every exit. A FILE that exists but is not
+writable is an error before tansu starts.
+
+A shell function that changes to the directory tansu was left in:
+
+```sh
+t() {
+  local dir
+  dir=$(mktemp) || return
+  tansu --choosedir="$dir" "$@" && cd -- "$(cat -- "$dir")"
+  rm -f -- "$dir"
+}
+```
+
+Since the UI is drawn on standard output, write the result to a file rather than to
+`/dev/stdout`.

@@ -77,7 +77,7 @@ Optional programs such as `bat`, `ffmpeg`, `poppler` and 7-Zip enable more previ
 ## Documentation
 
 - [Installation](docs/installation.md): building, optional dependencies, Home Manager
-- [Usage](docs/usage.md): key bindings, tabs, mouse, marking, git markers
+- [Usage](docs/usage.md): key bindings, tabs, mouse, marking, git markers, file chooser
 - [Previews](docs/previews.md): what each file type shows
 - [File operations](docs/file-operations.md): paste, tasks, delete, extract, clipboard
 - [Command line](docs/command-line.md): commands, search, shell macros, completion

@@ -18,7 +18,8 @@ with events.
 
 | Module        | Purpose                                                            |
 |---------------|--------------------------------------------------------------------|
-| `main.rs`     | CLI argument, startup, event loop                                  |
+| `main.rs`     | Startup, event loop, chooser output files                          |
+| `cli.rs`      | Command line arguments, including the ranger chooser options       |
 | `terminal.rs` | Raw mode / alternate screen setup, restore on exit and on panic    |
 | `app.rs`      | Application state, navigation, caches, command queue               |
 | `action.rs`   | `Action` enum                                                      |
