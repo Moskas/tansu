@@ -14,6 +14,8 @@ Options:
   --choosefiles=FILE   Opening a file writes the marked or selected paths to FILE and quits
   --choosedir=FILE     On exit, write the current directory to FILE
   --selectfile=PATH    Start with PATH selected (same as passing PATH)
+  --show-only-dirs     List directories only
+  --cmd=COMMAND        Run a command line once the start directory is listed (repeatable)
   -h, --help           Show this help
   -V, --version        Show the version";
 
@@ -23,6 +25,9 @@ pub struct Args {
   pub choose_file: Option<PathBuf>,
   pub choose_files: Option<PathBuf>,
   pub choose_dir: Option<PathBuf>,
+  /// Command lines to run at startup, in order.
+  pub cmds: Vec<String>,
+  pub show_only_dirs: bool,
   pub help: bool,
   pub version: bool,
 }
@@ -62,6 +67,20 @@ impl Args {
         }
         "-V" | "--version" => {
           parsed.version = true;
+          continue;
+        }
+        "--show-only-dirs" => {
+          if inline.is_some() {
+            return Err(format!("`{name}` takes no value"));
+          }
+          parsed.show_only_dirs = true;
+          continue;
+        }
+        "--cmd" => {
+          match inline.or_else(|| args.next()) {
+            Some(v) if !v.is_empty() => parsed.cmds.push(v.to_string_lossy().into_owned()),
+            _ => return Err(format!("`{name}` needs a value")),
+          }
           continue;
         }
         "--choosefile" => &mut parsed.choose_file,

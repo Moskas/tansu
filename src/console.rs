@@ -192,6 +192,8 @@ pub enum ConsoleCommand {
   Create { name: String, dir: bool },
   /// Open the log of the `n`-th most recently finished shell task (1 is the latest).
   TaskLog(usize),
+  /// Show this text in the status line, like ranger's `echo`; empty clears it.
+  Echo(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -249,6 +251,9 @@ pub const TOUCH: &str = "touch";
 /// Name of the command that opens a finished shell task's log.
 pub const TASKLOG: &str = "tasklog";
 
+/// Name of the command that shows a message in the status line.
+pub const ECHO: &str = "echo";
+
 /// Flag of `open_with` that detaches the program instead of suspending tansu for it.
 pub const DETACH_FLAG: &str = "-d";
 
@@ -287,6 +292,10 @@ pub fn parse(line: &str) -> Option<Result<ConsoleCommand, ConsoleError>> {
     } else {
       ConsoleCommand::Search(pattern.to_string())
     }));
+  }
+  if name == ECHO {
+    let text = rest_after_command(line).trim_end();
+    return Some(Ok(ConsoleCommand::Echo(text.to_string())));
   }
   if name == SHELL {
     let rest = rest_after_command(line);
@@ -397,7 +406,7 @@ fn command_names(user_commands: &[&str]) -> Vec<String> {
     .map(str::to_string)
     .collect();
   let with_argument = [
-    CD, MKDIR, OPEN_WITH, RENAME, SEARCH, SHELL, SORT, TAB_OPEN, TOUCH, TASKLOG, Z,
+    CD, ECHO, MKDIR, OPEN_WITH, RENAME, SEARCH, SHELL, SORT, TAB_OPEN, TOUCH, TASKLOG, Z,
   ];
   names.extend(with_argument.map(|n| format!("{n} ")));
   names.extend(user_commands.iter().map(|n| n.to_string()));

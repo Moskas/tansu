@@ -51,6 +51,7 @@ fn main() -> Result<()> {
 
   let mut app = App::new(config, keymap, start, select, meta::user_at_host(), home);
   app.chooser = choose_file.is_some() || choose_files.is_some();
+  app.show_only_dirs = args.show_only_dirs;
   // $XDG_DATA_HOME/Trash, the home trash of the freedesktop.org specification.
   app.trash_dir = dirs.as_ref().map(|d| d.data_dir().join("Trash"));
   let history_file = dirs
@@ -71,6 +72,7 @@ fn main() -> Result<()> {
     };
     app.set_error(format!("{first}{suffix}"));
   }
+  app.run_on_start(args.cmds);
 
   let mut guard = TerminalGuard::new()?;
   // The terminal query reads stdin, so it has to finish before the input thread starts.
@@ -126,6 +128,9 @@ fn main() -> Result<()> {
       }
     }
     guard.terminal.draw(|f| ui::render(f, &app))?;
+    if app.config.update_title {
+      guard.set_title(&format!("tansu:{}", app.short_path(&app.cwd)));
+    }
 
     let ev = match rx.recv_timeout(TICK) {
       Ok(ev) => ev,

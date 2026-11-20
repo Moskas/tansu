@@ -58,8 +58,8 @@ A custom command runs from the command line (`:proj tansu`) or from a key bindin
   not wait for it: the next line runs right away.
 - A custom command can run another one, up to 8 levels deep. A command that runs itself
   stops at that limit with an error.
-- A custom command can't use a built-in command's name, and its name can't contain
-  whitespace. Entries that break either rule are skipped with a warning.
+- A custom command can't use a built-in command's name (`echo` included), and its name
+  can't contain whitespace. Entries that break either rule are skipped with a warning.
 
 ## Scripts
 
@@ -72,6 +72,7 @@ Every `shell` command gets these environment variables:
 | `TANSU_SELECTION` | Full paths of the marked entries, or of the selected one, one per line     |
 | `TANSU_CMD`       | A file for command lines to run once the command exits                     |
 | `TANSU_LEVEL`     | How deeply tansu is nested (1 inside the first tansu), like `RANGER_LEVEL` |
+| `TANSU_CHOOSER`   | `1` while tansu runs as a file chooser (`--choosefile`, `--choosefiles`)   |
 
 Each line written into `$TANSU_CMD` is run as a tansu command line after the shell command
 exits, in order. Blank lines are skipped. Up to 64 KiB is read, and the file is deleted

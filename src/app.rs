@@ -83,6 +83,8 @@ pub enum Command {
   CountDirs(Vec<PathBuf>),
   VcsScan(VcsRequest),
   Open(PathBuf),
+  /// Find the MIME type of the file being opened; answered by `Event::MimeDetected`.
+  DetectMime(PathBuf),
   /// Run `argv` with `path` appended. A foreground program gets the terminal while tansu
   /// waits; a detached one runs in the background.
   Spawn {
@@ -386,6 +388,8 @@ pub struct App {
   /// Components of `cwd` that are symlinks (as paths, `cwd` included), for the header.
   pub cwd_symlinks: HashSet<PathBuf>,
   pub show_hidden: bool,
+  /// List directories only (`--show-only-dirs`), for picking a directory.
+  pub show_only_dirs: bool,
   /// Order of entries in every listing; directories always come first.
   pub sort: SortKey,
   pub show_help: bool,
@@ -457,6 +461,8 @@ pub struct App {
   commands: Vec<Command>,
   /// How many custom commands are running, one inside another.
   command_depth: usize,
+  /// Command lines from `--cmd`, run once the current directory is first listed.
+  startup_commands: Vec<String>,
 }
 
 impl App {
@@ -471,6 +477,7 @@ impl App {
   ) -> Self {
     let mut app = App {
       show_hidden: config.show_hidden,
+      show_only_dirs: false,
       sort: config.sort,
       config,
       keymap,
@@ -519,6 +526,7 @@ impl App {
       closed_tabs: Vec::new(),
       commands: Vec::new(),
       command_depth: 0,
+      startup_commands: Vec::new(),
     };
     app.enter_dir(start, select);
     app
@@ -724,7 +732,7 @@ impl App {
   }
 
   pub fn is_visible(&self, entry: &Entry) -> bool {
-    self.show_hidden || !entry.is_hidden()
+    (self.show_hidden || !entry.is_hidden()) && (!self.show_only_dirs || entry.is_dir())
   }
 
   /// The entries the parent column shows (`listing` is the parent's) and the position of the
@@ -842,6 +850,7 @@ impl App {
         Ok(path) => self.go_to(path, console::Z),
         Err(e) => self.set_error(e),
       },
+      Event::MimeDetected { path, mime } => self.on_mime_detected(path, mime),
       Event::Vcs { dir, info, repos } => {
         self.vcs_dirs.insert(dir, info);
         for repo in repos {
@@ -1122,6 +1131,25 @@ impl App {
       Some(Ok(ConsoleCommand::Search(pattern))) => self.start_search(pattern),
       Some(Ok(ConsoleCommand::Create { name, dir })) => self.create(&name, dir),
       Some(Ok(ConsoleCommand::TaskLog(n))) => self.task_log(n),
+      Some(Ok(ConsoleCommand::Echo(text))) if text.is_empty() => self.message = None,
+      Some(Ok(ConsoleCommand::Echo(text))) => {
+        self.set_info(crate::fs::entry::sanitize(&text));
+      }
+    }
+  }
+
+  /// Runs `lines` (from `--cmd`) once the current directory is listed, so they can use the
+  /// selection. Without a pending listing they run now.
+  pub fn run_on_start(&mut self, lines: Vec<String>) {
+    self.startup_commands = lines;
+    if !self.pending_dirs.contains(&self.cwd) {
+      self.run_startup_commands();
+    }
+  }
+
+  fn run_startup_commands(&mut self) {
+    for line in std::mem::take(&mut self.startup_commands) {
+      self.run_command_line(&line);
     }
   }
 
@@ -1256,6 +1284,9 @@ impl App {
     ];
     if let Some(selected) = selected {
       env.push(("TANSU_SELECTED".into(), selected.as_os_str().to_os_string()));
+    }
+    if self.chooser {
+      env.push(("TANSU_CHOOSER".into(), "1".into()));
     }
     env
   }
@@ -2752,6 +2783,7 @@ impl App {
           .iter()
           .filter(|p| p.parent() == Some(dir))
           .filter(|p| self.show_hidden || !display_name(p).starts_with('.'))
+          .filter(|p| !self.show_only_dirs || p.is_dir())
           .cloned()
           .collect();
         marked.sort();
@@ -2772,9 +2804,46 @@ impl App {
         file: entry.path,
       });
       self.should_quit = true;
+    } else if self.config.open.iter().any(|r| r.needs_mime()) {
+      self.commands.push(Command::DetectMime(entry.path));
     } else {
+      self.open_by_rules(&entry, None);
+    }
+  }
+
+  /// The type of the file being opened is known: opens it if it is still selected.
+  fn on_mime_detected(&mut self, path: PathBuf, mime: Result<String, String>) {
+    let Some(entry) = self.selected().filter(|e| e.path == path).cloned() else {
+      return;
+    };
+    let mime = match mime {
+      Ok(mime) => Some(mime),
+      Err(e) => {
+        self.set_error(e);
+        None
+      }
+    };
+    self.open_by_rules(&entry, mime.as_deref());
+  }
+
+  /// Runs the first `[[open]]` rule that matches `entry`, or the opener when none does.
+  fn open_by_rules(&mut self, entry: &Entry, mime: Option<&str>) {
+    let rule = self
+      .config
+      .open
+      .iter()
+      .find(|r| r.matches(&entry.name, mime))
+      .map(|r| r.run.clone());
+    let failed = self
+      .message
+      .as_ref()
+      .is_some_and(|m| m.level == MessageLevel::Error);
+    if !failed {
       self.set_info(format!("opening {}", entry.name));
-      self.commands.push(Command::Open(entry.path));
+    }
+    match rule {
+      Some(line) => self.run_command_line(&line),
+      None => self.commands.push(Command::Open(entry.path.clone())),
     }
   }
 
@@ -2996,6 +3065,9 @@ impl App {
     let previewing = self.preview.as_ref().is_some_and(|p| p.path == path);
     if is_cwd || previewing {
       self.refresh_preview();
+    }
+    if is_cwd {
+      self.run_startup_commands();
     }
   }
 

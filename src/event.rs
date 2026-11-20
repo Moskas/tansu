@@ -113,6 +113,11 @@ pub enum Event {
     /// Command lines it wrote into `$TANSU_CMD`.
     commands: Result<Vec<String>, String>,
   },
+  /// The MIME type of a file being opened, for the `[[open]]` rules.
+  MimeDetected {
+    path: PathBuf,
+    mime: Result<String, String>,
+  },
   /// VCS status for the entries of `dir`, plus the repositories involved.
   Vcs {
     dir: PathBuf,

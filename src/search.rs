@@ -80,6 +80,16 @@ impl Pattern {
     })
   }
 
+  /// Parses `text` as a wildcard pattern even without `*` or `?`, so plain text has to match
+  /// the whole name. Returns `None` for an empty pattern.
+  pub fn glob(text: &str) -> Option<Pattern> {
+    let mut pattern = Pattern::parse(text)?;
+    if let Kind::Fuzzy(chars) = pattern.kind {
+      pattern.kind = Kind::Glob(chars.into_iter().map(Token::Char).collect());
+    }
+    Some(pattern)
+  }
+
   /// Whether this is a wildcard pattern (as opposed to a fuzzy one).
   pub fn is_glob(&self) -> bool {
     matches!(self.kind, Kind::Glob(_))

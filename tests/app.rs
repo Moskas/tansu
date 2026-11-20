@@ -2920,6 +2920,138 @@ fn chooser_lists_marks_from_every_directory_then_the_current_ones() {
   );
 }
 
+#[test]
+fn show_only_dirs_lists_directories_only() {
+  let (_tmp, work) = fixture();
+  std::os::unix::fs::symlink(work.join("beta"), work.join("link")).unwrap();
+  let mut app = new_app(&work);
+  app.show_only_dirs = true;
+  press(&mut app, "R."); // reloaded, hidden files shown: still no files
+  assert_eq!(names(&app), ["alpha", "beta", "link"]);
+  press(&mut app, "l");
+  assert_eq!(app.cwd, work.join("alpha"));
+  assert_eq!(app.visible_len(), 0);
+}
+
+#[test]
+fn startup_commands_run_once_the_directory_is_listed() {
+  let (_tmp, work) = fixture();
+  let config = Config {
+    icons: false,
+    vcs_aware: false,
+    ..Config::default()
+  };
+  let mut app = App::new(
+    config,
+    Keymap::default(),
+    work.clone(),
+    None,
+    "tester@box".to_string(),
+    None,
+  );
+  app.set_size(WIDTH, HEIGHT);
+  app.run_on_start(vec!["search file10".into(), "echo Select file".into()]);
+  // Nothing is listed yet, so nothing has run.
+  assert!(app.message.is_none());
+  pump(&mut app);
+  assert_eq!(selected(&app), "file10.txt");
+  assert_eq!(app.message.as_ref().unwrap().text, "Select file");
+  // They run once only.
+  press(&mut app, "ggR");
+  assert_eq!(selected(&app), "alpha");
+}
+
+fn app_with_open_rules(start: &Path, rules: &str) -> App {
+  let mut config = Config::parse(rules).unwrap();
+  config.icons = false;
+  config.vcs_aware = false;
+  assert!(config.validate().is_empty());
+  let mut app = App::new(
+    config,
+    Keymap::default(),
+    start.to_path_buf(),
+    None,
+    "tester@box".to_string(),
+    None,
+  );
+  app.set_size(WIDTH, HEIGHT);
+  pump(&mut app);
+  app
+}
+
+#[test]
+fn open_rules_by_name_run_their_command_line() {
+  let (_tmp, work) = fixture();
+  let rules = "[[open]]\nname = \"*.txt\"\nrun = \"shell -w less %s\"";
+  let mut app = app_with_open_rules(&work, rules);
+  press(&mut app, "jjj"); // file2.txt
+  press_keys_without_pump(&mut app, "<Enter>");
+  let cmds = shell_commands(&mut app);
+  assert!(
+    matches!(&cmds[..], [Command::Shell { script, .. }] if script == "less 'file2.txt'"),
+    "{cmds:?}"
+  );
+  // No rule matches: the opener.
+  press(&mut app, "k"); // blob.bin
+  press_keys_without_pump(&mut app, "<Enter>");
+  assert_eq!(app.take_commands(), [Command::Open(work.join("blob.bin"))]);
+}
+
+#[test]
+fn open_rules_by_mime_wait_for_the_detected_type() {
+  let (_tmp, work) = fixture();
+  let rules = "[[open]]\nmime = \"text/*\"\nrun = \"shell less %s\"";
+  let mut app = app_with_open_rules(&work, rules);
+  press(&mut app, "jjjj"); // file10.txt
+  press_keys_without_pump(&mut app, "<Enter>");
+  let path = work.join("file10.txt");
+  assert_eq!(app.take_commands(), [Command::DetectMime(path.clone())]);
+  app.handle_event(Event::MimeDetected {
+    path: path.clone(),
+    mime: Ok("text/plain".into()),
+  });
+  assert!(matches!(
+    &shell_commands(&mut app)[..],
+    [Command::Shell { .. }]
+  ));
+  // Another type, or a failed detection: the opener, with the error shown.
+  app.handle_event(Event::MimeDetected {
+    path: path.clone(),
+    mime: Ok("image/png".into()),
+  });
+  assert_eq!(app.take_commands(), [Command::Open(path.clone())]);
+  app.handle_event(Event::MimeDetected {
+    path: path.clone(),
+    mime: Err("no file".into()),
+  });
+  assert_eq!(app.take_commands(), [Command::Open(path.clone())]);
+  assert_eq!(app.message.as_ref().unwrap().text, "no file");
+  // The selection moved on before the answer: nothing is opened.
+  press(&mut app, "k");
+  app.handle_event(Event::MimeDetected {
+    path,
+    mime: Ok("text/plain".into()),
+  });
+  assert!(app.take_commands().is_empty());
+}
+
+#[test]
+fn chooser_ignores_open_rules_and_tells_scripts() {
+  let (_tmp, work) = fixture();
+  let rules = "[[open]]\nmime = \"text/*\"\nrun = \"shell less %s\"";
+  let mut app = app_with_open_rules(&work, rules);
+  app.chooser = true;
+  press(&mut app, ":shell true");
+  press_keys_without_pump(&mut app, "<Enter>");
+  let Some(Command::Shell { env, .. }) = app.take_commands().pop() else {
+    panic!("not a shell command");
+  };
+  assert!(env.iter().any(|(k, v)| k == "TANSU_CHOOSER" && v == "1"));
+  press(&mut app, "jjjj<Enter>");
+  assert!(app.should_quit);
+  assert_eq!(app.chosen.unwrap().file, work.join("file10.txt"));
+}
+
 // ---- custom commands ----
 
 fn app_with_commands(start: &Path, commands: &str, keys: &[(&str, &str)]) -> App {

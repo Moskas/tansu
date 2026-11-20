@@ -47,6 +47,10 @@ mouse_enabled = true
 # Keep the command-line history in $XDG_DATA_HOME/tansu/history across sessions.
 save_console_history = true
 
+# Set the terminal title to `tansu:<directory>` (ranger's update_title). The terminal's own
+# title is saved and restored on exit and while programs run on the terminal.
+update_title = false
+
 [preview]
 max_bytes = 65536     # bytes read from a file for the text preview
 max_lines = 300       # lines kept from a text preview
@@ -125,7 +129,54 @@ vcs_commit = "lightyellow"
 # `description`. `%a` stands for the arguments typed after the name.
 [commands]
 edit = { run = "shell $EDITOR %s", description = "Edit the selection" }
+
+# How files are opened by type; see "Open rules" below.
+[[open]]
+mime = "text/*"
+run = "shell emacs -nw %s"
 ```
+
+## Open rules
+
+`[[open]]` rules pick how a file is opened, like ranger's rifle. Each rule has:
+
+| Key    | Value                                                                         |
+|--------|-------------------------------------------------------------------------------|
+| `name` | A glob or a list of globs on the file name (`"*.mkv"`, `"Makefile"`)          |
+| `mime` | A glob or a list of globs on the MIME type (`"text/*"`, `"application/json"`) |
+| `run`  | The command line to run, as in `[keys]`                                       |
+
+A rule needs `name`, `mime` or both. It matches when every key it sets matches, and a key
+matches when any of its globs does. `*` matches any run of characters and `?` one; a glob
+without them matches the whole name exactly. Case is ignored unless the glob contains an
+uppercase letter. Rules are tried in order and the first match runs; files no rule matches go
+to `opener`.
+
+```toml
+[[open]]
+mime = ["text/*", "application/json", "inode/x-empty"]
+run = "shell emacs -nw %s"       # on the terminal; tansu waits for it
+
+[[open]]
+name = ["*.mkv", "*.mp4", "*.webm"]
+run = "shell -f mpv %s"          # detached
+
+[[open]]
+name = "*.pdf"
+run = "open_with -d zathura"
+```
+
+`run` is an ordinary command line, so the `shell` flags decide whether the program runs on
+the terminal (no flag, `-w`) or detached (`-f`), and `%s` stands for the marked entries or the
+selected one. It can also run a custom command.
+
+The MIME type comes from `file --brief --mime-type -L`, run in the background when a file is
+opened; it is only run when some rule has `mime`. Without `file`, rules with `mime` never
+match and the error is shown, while `name` rules and `opener` still work.
+
+Rules only apply to opening files (`l`, `<Enter>`, `:open`, double and right click). In
+chooser mode (`--choosefile`, `--choosefiles`) opening a file chooses it and the rules are
+not used.
 
 
 ## Action names

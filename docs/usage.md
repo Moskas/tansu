@@ -73,7 +73,8 @@ size says nothing about its contents; directories stay in name order. Changing t
 keeps the selected entry under the cursor and applies to every column.
 
 Files are opened with the configured opener (default `xdg-open`), detached from the
-terminal so tansu stays usable.
+terminal so tansu stays usable. `[[open]]` rules can open files by name or MIME type instead,
+for example text in a terminal editor; see [Open rules](configuration.md#open-rules).
 
 ## Tabs
 
@@ -157,6 +158,8 @@ tansu takes ranger's options for picking files from scripts and other programs:
 | `--choosefiles=FILE` | Opening a file writes the chosen paths, one per line, and quits     |
 | `--choosedir=FILE`   | On exit, writes the current directory to FILE                       |
 | `--selectfile=PATH`  | Starts with PATH selected, like passing PATH                        |
+| `--show-only-dirs`   | Lists directories only, for picking a directory                     |
+| `--cmd=COMMAND`      | Runs a command line once the start directory is listed; repeatable  |
 
 Options also take their value as a separate argument (`--choosefile FILE`). Entering a
 directory works as usual; only opening a file chooses it, by key, `:open` or double click.
@@ -167,6 +170,17 @@ without a trailing newline, as ranger does.
 The chooser files are written only when a file is chosen, so quitting without one leaves
 them untouched; `--choosedir` is written on every exit. A FILE that exists but is not
 writable is an error before tansu starts.
+
+`--cmd` lines run in order, after the start directory is listed, so they can use the
+selection (`--cmd='search READ'`). `--cmd='echo Select a file'` shows a hint in the status
+line. Scripts run from tansu see `TANSU_CHOOSER=1` while it is choosing.
+
+### xdg-desktop-portal-termfilechooser
+
+The `ranger-wrapper.sh` that ships with xdg-desktop-portal-termfilechooser works unchanged
+with `cmd="tansu"`. It uses `--choosefile`, `--choosefiles`, `--choosedir`,
+`--selectfile`, `--show-only-dirs` and `--cmd="echo ..."`. In the directory picker,
+quitting chooses the current directory.
 
 A shell function that changes to the directory tansu was left in:
 

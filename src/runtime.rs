@@ -71,6 +71,30 @@ pub fn zoxide_query(keywords: &[String], exclude: &Path) -> Event {
   Event::Zoxide(result)
 }
 
+/// Asks `file` for the MIME type of `path`, following symlinks, for the `[[open]]` rules.
+pub fn detect_mime(path: &Path) -> Event {
+  let output = std::process::Command::new("file")
+    .args(["--brief", "--mime-type", "-L", "--"])
+    .arg(path)
+    .stdin(std::process::Stdio::null())
+    .output();
+  let mime = match output {
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+      Err("open: `file` is not installed, so MIME rules are skipped".to_string())
+    }
+    Err(e) => Err(format!("open: could not run `file`: {e}")),
+    Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).trim().to_string()),
+    Ok(out) => Err(format!(
+      "open: file: {}",
+      String::from_utf8_lossy(&out.stderr).trim()
+    )),
+  };
+  Event::MimeDetected {
+    path: path.to_path_buf(),
+    mime,
+  }
+}
+
 /// Starts the thread that records directory visits with `zoxide add`, one at a time so
 /// concurrent writes to the database cannot lose updates. Without zoxide installed it stops
 /// after the first attempt.
@@ -670,6 +694,15 @@ impl Runtime {
           return Some(format!("z: could not start zoxide: {e}"));
         }
       }
+      Command::DetectMime(path) => {
+        let tx = self.tx.clone();
+        let spawned = thread::Builder::new().name("file".into()).spawn(move || {
+          let _ = tx.send(detect_mime(&path));
+        });
+        if let Err(e) = spawned {
+          return Some(format!("open: could not start `file`: {e}"));
+        }
+      }
       Command::Shell {
         script,
         cwd,
@@ -911,6 +944,7 @@ pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLim
     Command::VcsScan(req) => VcsScanner::default().scan(&req).into_iter().collect(),
     Command::Rename { from, to } => vec![rename(&from, &to)],
     Command::Zoxide { keywords, exclude } => vec![zoxide_query(&keywords, &exclude)],
+    Command::DetectMime(path) => vec![detect_mime(&path)],
     Command::Create { path, dir } => vec![create(&path, dir)],
     // Tasks run to the end at once here, so there is nothing to pause or cancel.
     Command::Paste { .. }

@@ -55,6 +55,47 @@ pub struct Config {
   pub keys: BTreeMap<String, String>,
   /// Custom commands, by name: command lines run in order, like ranger's `commands.py`.
   pub commands: BTreeMap<String, UserCommand>,
+  /// Set the terminal title to the current directory (like ranger's `update_title`).
+  pub update_title: bool,
+  /// How files are opened by type, like ranger's rifle: the first matching rule wins, and
+  /// `opener` handles files no rule matches.
+  pub open: Vec<OpenRule>,
+}
+
+/// An `[[open]]` rule: a command line to open files whose name and MIME type match.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenRule {
+  /// Globs on the file name (`*.mkv`, `Makefile`); one has to match.
+  #[serde(default, deserialize_with = "lines")]
+  pub name: Vec<String>,
+  /// Globs on the MIME type from `file --mime-type` (`text/*`); one has to match.
+  #[serde(default, deserialize_with = "lines")]
+  pub mime: Vec<String>,
+  /// The command line to run, as in `[keys]`, e.g. `shell emacs -nw %s`.
+  pub run: String,
+}
+
+impl OpenRule {
+  /// Whether the rule needs the file's MIME type to decide.
+  pub fn needs_mime(&self) -> bool {
+    !self.mime.is_empty()
+  }
+
+  /// Whether a file named `name` with MIME type `mime` (`None` when unknown) matches.
+  pub fn matches(&self, name: &str, mime: Option<&str>) -> bool {
+    let any = |globs: &[String], text: &str| {
+      globs
+        .iter()
+        .any(|g| crate::search::Pattern::glob(g).is_some_and(|p| p.score(text).is_some()))
+    };
+    (self.name.is_empty() || any(&self.name, name))
+      && (self.mime.is_empty() || mime.is_some_and(|m| any(&self.mime, m)))
+  }
+}
+
+fn lines<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+  Lines::deserialize(d).map(Vec::from)
 }
 
 /// A custom command from `[commands]`.
@@ -136,6 +177,8 @@ impl Default for Config {
       theme: Theme::default(),
       keys: BTreeMap::new(),
       commands: BTreeMap::new(),
+      update_title: false,
+      open: Vec::new(),
     }
   }
 }
@@ -213,6 +256,19 @@ impl Config {
         return true;
       };
       warnings.push(format!("config: commands: `{name}`: {problem}"));
+      false
+    });
+    let mut index = 0;
+    self.open.retain(|rule| {
+      index += 1;
+      let problem = if rule.name.is_empty() && rule.mime.is_empty() {
+        "needs `name` or `mime`"
+      } else if rule.run.trim().is_empty() {
+        "nothing to run"
+      } else {
+        return true;
+      };
+      warnings.push(format!("config: open: rule {index}: {problem}"));
       false
     });
     warnings

@@ -124,7 +124,15 @@ pub struct TerminalGuard {
   pub terminal: Tui,
   /// Mouse reporting is on, and must be turned on again after a suspension.
   mouse: bool,
+  /// The last title set, so an unchanged one is not sent again.
+  title: Option<String>,
+  /// The terminal's own title was saved on its title stack and is restored on exit.
+  title_pushed: bool,
 }
+
+/// xterm's window operations that save the title on the terminal's stack and restore it.
+const PUSH_TITLE: &str = "\x1b[22;0t";
+const POP_TITLE: &str = "\x1b[23;0t";
 
 impl TerminalGuard {
   pub fn new() -> Result<Self> {
@@ -149,6 +157,8 @@ impl TerminalGuard {
     Ok(TerminalGuard {
       terminal,
       mouse: false,
+      title: None,
+      title_pushed: false,
     })
   }
 }
@@ -165,6 +175,10 @@ impl TerminalGuard {
   /// Hands the terminal back to the shell state (cooked mode, main screen, visible cursor,
   /// no mouse reporting) while `f` runs, then takes it over again and forces a full redraw.
   pub fn suspended<T>(&mut self, f: impl FnOnce() -> T) -> Result<T> {
+    // The program gets the shell's title back and may set its own, so the next frame sets
+    // tansu's again.
+    self.pop_title();
+    self.title = None;
     restore();
     let out = f();
     enable_raw_mode().context("enabling raw mode")?;
@@ -175,6 +189,28 @@ impl TerminalGuard {
     self.terminal.hide_cursor().ok();
     clear(&mut self.terminal).context("clearing terminal")?;
     Ok(out)
+  }
+
+  /// Sets the terminal's window title, saving the terminal's own title the first time so it
+  /// comes back on exit. Does nothing when `title` is already shown.
+  pub fn set_title(&mut self, title: &str) {
+    if self.title.as_deref() == Some(title) {
+      return;
+    }
+    if !self.title_pushed {
+      let _ = TermOut.write_all(PUSH_TITLE.as_bytes());
+      self.title_pushed = true;
+    }
+    let _ = execute!(TermOut, crossterm::terminal::SetTitle(title));
+    self.title = Some(title.to_string());
+  }
+
+  /// Restores the title saved by `set_title`, once.
+  fn pop_title(&mut self) {
+    if std::mem::take(&mut self.title_pushed) {
+      let _ = TermOut.write_all(POP_TITLE.as_bytes());
+      let _ = TermOut.flush();
+    }
   }
 }
 
@@ -191,6 +227,7 @@ fn clear(terminal: &mut Tui) -> io::Result<()> {
 
 impl Drop for TerminalGuard {
   fn drop(&mut self) {
+    self.pop_title();
     restore();
     self.terminal.show_cursor().ok();
   }

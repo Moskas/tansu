@@ -1738,6 +1738,140 @@ fn args_take_ranger_chooser_options_in_both_forms() {
 }
 
 #[test]
+fn args_take_repeated_cmds_and_show_only_dirs() {
+  let args = parse_args(&[
+    "--choosedir=out",
+    "--show-only-dirs",
+    "--cmd=echo Select directory (a=b)",
+    "--cmd",
+    "search READ",
+    "dir",
+  ])
+  .unwrap();
+  assert!(args.show_only_dirs);
+  assert_eq!(args.cmds, ["echo Select directory (a=b)", "search READ"]);
+  assert_eq!(args.path, Some("dir".into()));
+  assert!(!parse_args(&[]).unwrap().show_only_dirs);
+  assert!(
+    parse_args(&["--show-only-dirs=yes"])
+      .unwrap_err()
+      .contains("takes no value")
+  );
+  assert!(
+    parse_args(&["--cmd"])
+      .unwrap_err()
+      .contains("needs a value")
+  );
+  assert!(
+    parse_args(&["--cmd="])
+      .unwrap_err()
+      .contains("needs a value")
+  );
+}
+
+#[test]
+fn stock_termfilechooser_wrapper_arguments_parse() {
+  // The arguments ranger-wrapper.sh (termfilechooser 1.5.0) passes in each mode.
+  for args in [
+    &[
+      "--choosefile=out",
+      "--cmd=echo Select save path (see tutorial in preview pane; try pressing zv or zp if no preview)",
+      "--selectfile=/tmp/f",
+    ][..],
+    &[
+      "--choosedir=out",
+      "--show-only-dirs",
+      "--cmd=echo Select directory (quit in dir to select it)",
+      "/tmp",
+    ],
+    &[
+      "--choosefiles=out",
+      "--cmd=echo Select file(s) (open file to select it; <Space> to select multiple)",
+      "/tmp",
+    ],
+    &[
+      "--choosefile=out",
+      "--cmd=echo Select file (open file to select it)",
+      "/tmp",
+    ],
+  ] {
+    assert!(parse_args(args).is_ok(), "{args:?}");
+  }
+}
+
+#[test]
+fn echo_takes_the_rest_of_the_line() {
+  assert_eq!(
+    parse("echo  Select file (a; b)  "),
+    Some(Ok(ConsoleCommand::Echo("Select file (a; b)".into())))
+  );
+  assert_eq!(parse("echo"), Some(Ok(ConsoleCommand::Echo(String::new()))));
+  assert!(tansu::console::is_builtin("echo"));
+}
+
+#[test]
+fn glob_patterns_match_whole_names_even_without_wildcards() {
+  use tansu::search::Pattern;
+  let exact = Pattern::glob("Makefile").unwrap();
+  assert!(exact.score("Makefile").is_some());
+  assert!(exact.score("Makefile.am").is_none());
+  assert!(exact.score("mkfile").is_none());
+  let ext = Pattern::glob("*.mkv").unwrap();
+  assert!(ext.score("film.MKV").is_some());
+  assert!(ext.score("film.mkv.part").is_none());
+  assert!(
+    Pattern::glob("text/*")
+      .unwrap()
+      .score("text/x-shellscript")
+      .is_some()
+  );
+  assert!(Pattern::glob("").is_none());
+}
+
+#[test]
+fn open_rules_parse_match_and_validate() {
+  let mut config = Config::parse(
+    r#"
+    [[open]]
+    mime = "text/*"
+    run = "shell emacs -nw %s"
+
+    [[open]]
+    name = ["*.mkv", "*.mp4"]
+    mime = ["video/*"]
+    run = "shell -f mpv %s"
+
+    [[open]]
+    run = "shell true"
+
+    [[open]]
+    name = "x"
+    run = " "
+    "#,
+  )
+  .unwrap();
+  let warnings = config.validate();
+  assert_eq!(
+    warnings,
+    [
+      "config: open: rule 3: needs `name` or `mime`",
+      "config: open: rule 4: nothing to run"
+    ]
+  );
+  let [text, video] = &config.open[..] else {
+    panic!("{:?}", config.open);
+  };
+  assert!(text.needs_mime());
+  assert!(text.matches("README", Some("text/plain")));
+  assert!(!text.matches("README", None));
+  assert!(video.matches("a.mkv", Some("video/x-matroska")));
+  // Both conditions have to match.
+  assert!(!video.matches("a.mkv", Some("text/plain")));
+  assert!(!video.matches("a.avi", Some("video/x-msvideo")));
+  assert!(Config::parse("[[open]]\nname = \"x\"\nrun = \"y\"\nbogus = 1").is_err());
+}
+
+#[test]
 fn args_reject_unknown_missing_and_repeated() {
   assert!(
     parse_args(&["--nope"])

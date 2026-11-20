@@ -30,6 +30,7 @@ for the session only. Lines run from key bindings and scripts are not recorded.
 | `<action>`                         | Any action name below, e.g. `open`, `reload`, `quit` |
 | `tab_open <n>`                     | Go to tab `n` (1 to 9), opening it                   |
 | `tasklog [n]`                      | Show the log of a finished `shell -b` task in `less` |
+| `echo <text>`                      | Show the text in the status line                     |
 | `q`                                | Close this tab, or quit when it is the only one      |
 | `qa`, `quitall`                    | Quit                                                 |
 
