@@ -1,7 +1,15 @@
 //! Terminal setup and teardown, including restoration on panic.
+//!
+//! The UI is drawn on `/dev/tty` rather than stdout, so it still shows when stdout is
+//! redirected (`$(tansu --choosefile=/dev/stdout)`). Without a controlling terminal it falls
+//! back to stdout. Input needs nothing: crossterm reads `/dev/tty` when stdin is not one.
 
-use std::io::{self, Stdout};
+use std::fs::File;
+use std::io::{self, BufWriter, IsTerminal, Read, Write};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::panic;
+use std::process::Stdio;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
@@ -12,7 +20,113 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-pub type Tui = Terminal<CrosstermBackend<Stdout>>;
+pub type Tui = Terminal<CrosstermBackend<BufWriter<TermOut>>>;
+
+/// The controlling terminal, opened once; `None` when there is none.
+fn tty() -> Option<&'static File> {
+  static TTY: OnceLock<Option<File>> = OnceLock::new();
+  TTY
+    .get_or_init(|| File::options().read(true).write(true).open("/dev/tty").ok())
+    .as_ref()
+}
+
+/// Writes to the terminal: `/dev/tty`, or stdout without one. Unbuffered; the UI wraps it in
+/// a `BufWriter` so a frame is written in few syscalls.
+pub struct TermOut;
+
+impl Write for TermOut {
+  fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    match tty() {
+      Some(mut tty) => tty.write(buf),
+      None => io::stdout().write(buf),
+    }
+  }
+
+  fn flush(&mut self) -> io::Result<()> {
+    match tty() {
+      Some(mut tty) => tty.flush(),
+      None => io::stdout().flush(),
+    }
+  }
+}
+
+/// Reads a line from the terminal (cooked mode), for prompts while tansu is suspended.
+pub fn read_line() {
+  let Some(mut tty) = tty().filter(|_| !io::stdin().is_terminal()) else {
+    let _ = io::stdin().read_line(&mut String::new());
+    return;
+  };
+  // Byte by byte, so nothing past the line is consumed.
+  let mut byte = [0u8];
+  while matches!(tty.read(&mut byte), Ok(1)) && byte[0] != b'\n' {}
+}
+
+/// Stdin for a program that takes over the terminal: tansu's own when it is the terminal,
+/// otherwise the terminal itself.
+pub fn child_stdin() -> Stdio {
+  child_stdio(io::stdin().is_terminal())
+}
+
+/// Stdout for a program that takes over the terminal, like [`child_stdin`]; an editor
+/// started from `$(tansu ...)` must not draw into the captured output.
+pub fn child_stdout() -> Stdio {
+  child_stdio(io::stdout().is_terminal())
+}
+
+fn child_stdio(inherited_is_terminal: bool) -> Stdio {
+  match tty() {
+    Some(tty) if !inherited_is_terminal => tty
+      .try_clone()
+      .map_or_else(|_| Stdio::inherit(), Stdio::from),
+    _ => Stdio::inherit(),
+  }
+}
+
+/// Runs `f` with the terminal as stdin and stdout, for code that only talks to stdio (the
+/// graphics query of ratatui-image). The redirected descriptors are put back afterwards.
+///
+/// Must not be the first use of crossterm's input, which would then keep reading fd 0
+/// after it is restored; [`TerminalGuard::new`] makes that use first.
+pub fn with_tty_stdio<T>(f: impl FnOnce() -> T) -> T {
+  with_tty_fds(true, f)
+}
+
+/// Like [`with_tty_stdio`] for stdout alone: crossterm writes its cursor position query
+/// (`ESC [ 6 n`) there, whatever the backend writes to.
+fn with_tty_stdout<T>(f: impl FnOnce() -> T) -> T {
+  with_tty_fds(false, f)
+}
+
+fn with_tty_fds<T>(stdin: bool, f: impl FnOnce() -> T) -> T {
+  let Some(tty) = tty() else {
+    return f();
+  };
+  let _ = io::stdout().flush();
+  let mut saved: Vec<(i32, OwnedFd)> = Vec::new();
+  for (fd, swap) in [
+    (libc::STDIN_FILENO, stdin && !io::stdin().is_terminal()),
+    (libc::STDOUT_FILENO, !io::stdout().is_terminal()),
+  ] {
+    if !swap {
+      continue;
+    }
+    // SAFETY: stdin and stdout stay open for the life of the process.
+    let Ok(copy) = unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned() else {
+      continue;
+    };
+    // SAFETY: both descriptors are open; dup2 replaces `fd` atomically.
+    if unsafe { libc::dup2(tty.as_fd().as_raw_fd(), fd) } >= 0 {
+      saved.push((fd, copy));
+    }
+  }
+  let out = f();
+  let _ = io::stdout().flush();
+  for (fd, copy) in saved {
+    // SAFETY: as above; `copy` is closed when dropped.
+    unsafe { libc::dup2(copy.as_raw_fd(), fd) };
+  }
+  out
+}
 
 /// Owns the terminal; restores it when dropped (normal exit and error paths).
 pub struct TerminalGuard {
@@ -25,12 +139,14 @@ impl TerminalGuard {
   pub fn new() -> Result<Self> {
     install_panic_hook();
     enable_raw_mode().context("enabling raw mode")?;
-    let mut stdout = io::stdout();
-    if let Err(e) = execute!(stdout, EnterAlternateScreen) {
+    if let Err(e) = execute!(TermOut, EnterAlternateScreen) {
       restore();
       return Err(e).context("entering alternate screen");
     }
-    let mut terminal = match Terminal::new(CrosstermBackend::new(stdout)) {
+    let mut terminal = match Terminal::new(CrosstermBackend::new(BufWriter::with_capacity(
+      1 << 16,
+      TermOut,
+    ))) {
       Ok(t) => t,
       Err(e) => {
         restore();
@@ -38,7 +154,9 @@ impl TerminalGuard {
       }
     };
     terminal.hide_cursor().ok();
-    terminal.clear().ok();
+    // `clear` queries the cursor position, which also starts crossterm's input on the
+    // terminal, so it has to come before any `with_tty_stdio`.
+    with_tty_stdout(|| terminal.clear()).ok();
     Ok(TerminalGuard {
       terminal,
       mouse: false,
@@ -50,7 +168,7 @@ impl TerminalGuard {
   /// Turns on mouse reporting. Called after terminal queries are done, so mouse reports
   /// cannot get mixed into their replies.
   pub fn enable_mouse(&mut self) -> Result<()> {
-    execute!(io::stdout(), EnableMouseCapture).context("enabling mouse capture")?;
+    execute!(TermOut, EnableMouseCapture).context("enabling mouse capture")?;
     self.mouse = true;
     Ok(())
   }
@@ -61,12 +179,12 @@ impl TerminalGuard {
     restore();
     let out = f();
     enable_raw_mode().context("enabling raw mode")?;
-    execute!(io::stdout(), EnterAlternateScreen).context("entering alternate screen")?;
+    execute!(TermOut, EnterAlternateScreen).context("entering alternate screen")?;
     if self.mouse {
       self.enable_mouse()?;
     }
     self.terminal.hide_cursor().ok();
-    self.terminal.clear().context("clearing terminal")?;
+    with_tty_stdout(|| self.terminal.clear()).context("clearing terminal")?;
     Ok(out)
   }
 }
@@ -82,7 +200,7 @@ impl Drop for TerminalGuard {
 pub fn restore() {
   let _ = disable_raw_mode();
   let _ = execute!(
-    io::stdout(),
+    TermOut,
     DisableMouseCapture,
     LeaveAlternateScreen,
     crossterm::cursor::Show

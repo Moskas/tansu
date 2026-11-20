@@ -697,7 +697,7 @@ impl Runtime {
         // the middle of a frame.
         Ok(Backend::Osc52) => {
           use std::io::Write;
-          let mut out = std::io::stdout().lock();
+          let mut out = crate::terminal::TermOut;
           let written = out
             .write_all(clipboard::osc52(&content).as_bytes())
             .and_then(|()| out.flush());

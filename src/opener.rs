@@ -10,6 +10,8 @@ use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 
+use crate::terminal;
+
 #[derive(Debug, thiserror::Error)]
 pub enum OpenError {
   #[error("no opener configured")]
@@ -96,7 +98,11 @@ fn wait_on_terminal(
   mut cmd: Command,
   wait_enter: bool,
 ) -> Result<ExitStatus, OpenError> {
-  let mut child = cmd.spawn().map_err(spawn_error(program))?;
+  let mut child = cmd
+    .stdin(terminal::child_stdin())
+    .stdout(terminal::child_stdout())
+    .spawn()
+    .map_err(spawn_error(program))?;
   // Installed after the spawn so the child keeps the default dispositions. They stay
   // ignored through the Enter prompt, since tansu is not restoring the terminal on Ctrl-C.
   let _signals = IgnoreTerminalSignals::install();
@@ -109,10 +115,10 @@ fn wait_on_terminal(
 
 /// Waits for a line on the cooked terminal, like ranger after `:shell -w`.
 fn press_enter() {
-  let mut out = std::io::stdout();
+  let mut out = terminal::TermOut;
   let _ = write!(out, "Press ENTER to continue");
   let _ = out.flush();
-  let _ = std::io::stdin().read_line(&mut String::new());
+  terminal::read_line();
 }
 
 fn command<'a>(argv: &'a [String], path: &Path) -> Result<(&'a str, Command), OpenError> {
@@ -166,7 +172,7 @@ pub fn run_shell_paged(script: &OsStr, cwd: &Path) -> Result<ExitStatus, OpenErr
   // once they are closed.
   drop(cmd);
   let mut pager = Command::new(PAGER);
-  pager.stdin(reader);
+  pager.stdin(reader).stdout(terminal::child_stdout());
   let spawned = pager.spawn();
   drop(pager);
   let mut pager = match spawned {

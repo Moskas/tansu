@@ -179,5 +179,14 @@ t() {
 }
 ```
 
-Since the UI is drawn on standard output, write the result to a file rather than to
-`/dev/stdout`.
+The UI is drawn on `/dev/tty`, not standard output, so the result can also go to a pipe or
+a command substitution:
+
+```sh
+file=$(tansu --choosefile=/dev/stdout) && "$EDITOR" -- "$file"
+tansu --choosefiles=/dev/stdout | xargs -d "\n" ls -l
+```
+
+Programs run in the foreground from tansu (`:open_with`, `:shell`) get the terminal as
+stdin and stdout when tansu's own are redirected. Without a controlling terminal, tansu
+draws on standard output.

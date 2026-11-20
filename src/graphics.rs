@@ -29,11 +29,14 @@ impl ImageEncoder {
     // ratatui-image's query reads stdin until the terminal answers a status report; on a
     // terminal that never answers, its reader thread outlives the timeout and swallows
     // keystrokes. So only query terminals known to answer.
-    let picker = if answers_status_report(QUERY_TIMEOUT) {
-      Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
-    } else {
-      Picker::halfblocks()
-    };
+    // Both talk to stdio, which may be redirected; the terminal is lent to them.
+    let picker = crate::terminal::with_tty_stdio(|| {
+      if answers_status_report(QUERY_TIMEOUT) {
+        Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
+      } else {
+        Picker::halfblocks()
+      }
+    });
     ImageEncoder { picker }
   }
 

@@ -20,7 +20,7 @@ with events.
 |---------------|--------------------------------------------------------------------|
 | `main.rs`     | Startup, event loop, chooser output files                          |
 | `cli.rs`      | Command line arguments, including the ranger chooser options       |
-| `terminal.rs` | Raw mode / alternate screen setup, restore on exit and on panic    |
+| `terminal.rs` | Raw mode, alternate screen, drawing on `/dev/tty`, restore on exit |
 | `app.rs`      | Application state, navigation, caches, command queue               |
 | `action.rs`   | `Action` enum                                                      |
 | `keymap.rs`   | Key notation parser, binding table, multi-key sequences            |
