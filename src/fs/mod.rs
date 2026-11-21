@@ -10,6 +10,6 @@ pub mod sort;
 pub mod trash;
 
 pub use entry::{DirCount, Entry, EntryKind, FileClass};
-pub use listing::{DirListing, ListError, count_entries, list_dir};
+pub use listing::{DirListing, ListError, count_entries, dir_mtime, list_dir};
 pub use ops::PasteMode;
 pub use sort::SortKey;

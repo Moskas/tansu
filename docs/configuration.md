@@ -51,6 +51,10 @@ save_console_history = true
 # title is saved and restored on exit and while programs run on the terminal.
 update_title = false
 
+# List the visible directories again when other programs add, remove or rename entries in
+# them. Checked once a second; changes to the contents of existing files are not noticed.
+auto_refresh = true
+
 [preview]
 max_bytes = 65536     # bytes read from a file for the text preview
 max_lines = 300       # lines kept from a text preview

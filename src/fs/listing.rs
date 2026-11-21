@@ -1,6 +1,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use super::meta::{NameCache, free_space};
 use super::sort::sort_entries;
@@ -40,6 +41,8 @@ pub struct DirListing {
   pub truncated: bool,
   /// Free bytes on the containing filesystem, if known.
   pub free: Option<u64>,
+  /// The directory's own modification time when listing began, to notice later changes.
+  pub mtime: Option<SystemTime>,
 }
 
 impl DirListing {
@@ -62,6 +65,8 @@ pub fn list_dir(
   max_entries: usize,
   cancelled: &dyn Fn() -> bool,
 ) -> Result<DirListing, ListError> {
+  // Taken before reading, so a change made during the listing still looks newer later.
+  let mtime = dir_mtime(path);
   let rd = fs::read_dir(path).map_err(|e| ListError::from_io(path, e))?;
   let mut names = NameCache::default();
   let mut resolve = |uid, gid| names.resolve(uid, gid);
@@ -85,7 +90,13 @@ pub fn list_dir(
     entries,
     truncated,
     free: free_space(path),
+    mtime,
   })
+}
+
+/// Modification time of the directory at `path`, following symlinks.
+pub fn dir_mtime(path: &Path) -> Option<SystemTime> {
+  fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 /// Counts entries in `path`, stopping at `cap`. Returns `None` if the directory is unreadable.

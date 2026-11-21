@@ -72,6 +72,11 @@ sorts put the newest entries first. Sorting by size orders files only, since a d
 size says nothing about its contents; directories stay in name order. Changing the order
 keeps the selected entry under the cursor and applies to every column.
 
+The current, parent and previewed directories are checked once a second and listed again
+when another program adds, removes or renames entries in them, keeping the cursor and
+marks. Changes to the contents of existing files are not noticed; `R` reloads by hand. Set
+`auto_refresh = false` to turn the checks off.
+
 Files are opened with the configured opener (default `xdg-open`), detached from the
 terminal so tansu stays usable. `[[open]]` rules can open files by name or MIME type instead,
 for example text in a terminal editor; see [Open rules](configuration.md#open-rules).

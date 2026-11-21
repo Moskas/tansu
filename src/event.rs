@@ -24,6 +24,8 @@ pub enum Event {
   Resize(u16, u16),
   /// Emitted when no other event arrived within the tick interval.
   Tick,
+  /// These directories changed since they were listed.
+  DirsChanged(Vec<PathBuf>),
   DirLoaded {
     path: PathBuf,
     result: Result<DirListing, String>,

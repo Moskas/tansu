@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::app::Command;
 use crate::clipboard::{self, Backend};
 use crate::event::Event;
 use crate::fs::ops::OnConflict;
-use crate::fs::{DirCount, Entry, PasteMode, count_entries, list_dir, ops};
+use crate::fs::{DirCount, Entry, PasteMode, count_entries, dir_mtime, list_dir, ops};
 use crate::graphics::ImageEncoder;
 use crate::jobs::{Control, JobId, Meter, Progress};
 use crate::preview::{Preview, PreviewContext, PreviewError, PreviewLimits, PreviewRegistry};
@@ -36,6 +36,16 @@ pub fn load_dir(path: &Path) -> Event {
     path: path.to_path_buf(),
     result,
   }
+}
+
+/// Reports the directories whose modification time is no longer the one their listing saw.
+pub fn check_dirs(dirs: &[(PathBuf, Option<SystemTime>)]) -> Option<Event> {
+  let changed: Vec<PathBuf> = dirs
+    .iter()
+    .filter(|(path, seen)| dir_mtime(path) != *seen)
+    .map(|(path, _)| path.clone())
+    .collect();
+  (!changed.is_empty()).then_some(Event::DirsChanged(changed))
 }
 
 /// Asks zoxide for the best match for `keywords`, skipping `exclude` (the current
@@ -547,6 +557,9 @@ pub struct Runtime {
   tx: Sender<Event>,
   previews: LatestWorker<PreviewJob>,
   counts: LatestWorker<Vec<PathBuf>>,
+  /// Checks for directories changed by other programs; a stat stuck on a dead mount never
+  /// piles up requests behind it.
+  watch: LatestWorker<Vec<(PathBuf, Option<SystemTime>)>>,
   vcs: Sender<VcsRequest>,
   zoxide_add: Sender<PathBuf>,
   files: Sender<FileTask>,
@@ -581,6 +594,12 @@ impl Runtime {
         let _ = ctx.send(ev);
       });
     });
+    let wtx = tx.clone();
+    let watch = LatestWorker::spawn("watch", move |dirs: Vec<_>, _| {
+      if let Some(ev) = check_dirs(&dirs) {
+        let _ = wtx.send(ev);
+      }
+    });
     let vcs = spawn_vcs_worker(tx.clone());
     let zoxide_add = spawn_zoxide_add_worker();
     let files = spawn_file_worker(tx.clone());
@@ -588,6 +607,7 @@ impl Runtime {
       tx,
       previews,
       counts,
+      watch,
       vcs,
       zoxide_add,
       files,
@@ -667,6 +687,7 @@ impl Runtime {
       } => self.previews.submit((id, entry, cells, extended)),
       Command::CancelPreview => self.previews.cancel(),
       Command::CountDirs(dirs) => self.counts.submit(dirs),
+      Command::CheckDirs(dirs) => self.watch.submit(dirs),
       Command::ZoxideAdd(dir) => {
         let _ = self.zoxide_add.send(dir);
       }
@@ -925,6 +946,7 @@ pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLim
   };
   match cmd {
     Command::LoadDir(path) => vec![load_dir(&path)],
+    Command::CheckDirs(dirs) => check_dirs(&dirs).into_iter().collect(),
     Command::Preview {
       id,
       entry,

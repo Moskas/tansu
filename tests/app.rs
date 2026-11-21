@@ -3381,3 +3381,59 @@ fn the_command_line_recalls_earlier_lines_with_up_and_down() {
   press(&mut app, "<Esc>");
   assert!(app.console.is_none());
 }
+
+/// Gives `dir` a modification time no listing has seen, as another program's change would.
+fn touch_dir(dir: &Path) {
+  let time = std::time::UNIX_EPOCH + Duration::from_secs(1_000_000);
+  fs::File::open(dir).unwrap().set_modified(time).unwrap();
+}
+
+#[test]
+fn outside_changes_are_listed_after_a_check() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj");
+  assert_eq!(selected(&app), "file2.txt");
+  fs::write(work.join("aaa.txt"), "").unwrap();
+  touch_dir(&work);
+  app.check_dirs();
+  pump(&mut app);
+  assert!(names(&app).contains(&"aaa.txt".to_string()));
+  assert_eq!(selected(&app), "file2.txt");
+}
+
+#[test]
+fn outside_deletion_drops_the_entry_and_its_mark() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj<Space>");
+  let path = work.join("file2.txt");
+  assert!(app.is_marked(&path));
+  fs::remove_file(&path).unwrap();
+  touch_dir(&work);
+  app.check_dirs();
+  pump(&mut app);
+  assert!(!names(&app).contains(&"file2.txt".to_string()));
+  assert!(!app.is_marked(&path));
+}
+
+#[test]
+fn unchanged_directories_are_not_listed_again() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  app.check_dirs();
+  let cmds = app.take_commands();
+  // The current directory, its parent and the previewed `alpha`.
+  let [Command::CheckDirs(dirs)] = cmds.as_slice() else {
+    panic!("expected one check, got {cmds:?}");
+  };
+  let paths: Vec<&Path> = dirs.iter().map(|(p, _)| p.as_path()).collect();
+  let parent = work.parent().unwrap();
+  assert_eq!(
+    paths,
+    [work.as_path(), parent, work.join("alpha").as_path()]
+  );
+  for cmd in cmds {
+    assert!(execute_sync(cmd, &PreviewRegistry::with_defaults(), app.config.preview).is_empty());
+  }
+}

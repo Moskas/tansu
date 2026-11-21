@@ -57,6 +57,9 @@ pub struct Config {
   pub commands: BTreeMap<String, UserCommand>,
   /// Set the terminal title to the current directory (like ranger's `update_title`).
   pub update_title: bool,
+  /// List the visible directories again when other programs add, remove or rename entries
+  /// in them. They are checked once a second, by the directory's modification time.
+  pub auto_refresh: bool,
   /// How files are opened by type, like ranger's rifle: the first matching rule wins, and
   /// `opener` handles files no rule matches.
   pub open: Vec<OpenRule>,
@@ -178,6 +181,7 @@ impl Default for Config {
       keys: BTreeMap::new(),
       commands: BTreeMap::new(),
       update_title: false,
+      auto_refresh: true,
       open: Vec::new(),
     }
   }

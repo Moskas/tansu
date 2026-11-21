@@ -8,7 +8,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
@@ -39,6 +39,8 @@ const WHEEL_ROWS: isize = 3;
 const NO_SEARCH: &str = "no active search; press / to search first";
 /// Longest gap between two clicks on the same entry that counts as a double click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// How often the visible directories are checked for changes made by other programs.
+const DIR_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// Most bytes a text preview reads after being extended by scrolling.
 const EXTENDED_MAX_BYTES: usize = 16 * 1024 * 1024;
 
@@ -70,6 +72,8 @@ fn items(n: usize) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
   LoadDir(PathBuf),
+  /// Report which of these directories changed since their listing, by modification time.
+  CheckDirs(Vec<(PathBuf, Option<SystemTime>)>),
   Preview {
     id: u64,
     entry: Entry,
@@ -449,6 +453,8 @@ pub struct App {
   previous_dir: Option<PathBuf>,
   /// Entry to select once the given directory is listed again (after a rename).
   select_after_load: Option<(PathBuf, String)>,
+  /// When the visible directories were last checked for outside changes.
+  last_dir_check: Instant,
   /// The last left click in the current column (its row and the entry it selected), for
   /// detecting double clicks.
   last_click: Option<(Instant, usize, PathBuf)>,
@@ -520,6 +526,7 @@ impl App {
       search: None,
       previous_dir: None,
       select_after_load: None,
+      last_dir_check: Instant::now(),
       last_click: None,
       current_tab: 1,
       tabs: std::collections::BTreeMap::new(),
@@ -776,6 +783,7 @@ impl App {
       Event::Resize(w, h) => self.set_size(w, h),
       Event::Tick => self.tick(),
       Event::DirLoaded { path, result } => self.on_dir_loaded(path, result),
+      Event::DirsChanged(dirs) => self.on_dirs_changed(dirs),
       Event::PreviewReady {
         id,
         path,
@@ -2470,6 +2478,43 @@ impl App {
       && m.at.elapsed() >= INFO_TIMEOUT
     {
       self.message = None;
+    }
+    if self.config.auto_refresh && self.last_dir_check.elapsed() >= DIR_CHECK_INTERVAL {
+      self.check_dirs();
+    }
+  }
+
+  /// Asks for the visible directories (current, parent, previewed) to be checked for changes
+  /// made outside tansu; the ones that changed are listed again.
+  pub fn check_dirs(&mut self) {
+    self.last_dir_check = Instant::now();
+    let mut paths = vec![self.cwd.clone()];
+    paths.extend(self.cwd.parent().map(Path::to_path_buf));
+    paths.extend(
+      self
+        .selected()
+        .filter(|e| e.is_dir())
+        .map(|e| e.path.clone()),
+    );
+    let dirs: Vec<_> = paths
+      .into_iter()
+      .filter(|p| !self.pending_dirs.contains(p))
+      .filter_map(|p| match self.dirs.get(&p) {
+        Some(DirState::Loaded(listing)) => Some((p, listing.mtime)),
+        _ => None,
+      })
+      .collect();
+    if !dirs.is_empty() {
+      self.commands.push(Command::CheckDirs(dirs));
+    }
+  }
+
+  fn on_dirs_changed(&mut self, dirs: Vec<PathBuf>) {
+    for dir in dirs {
+      if self.dirs.contains_key(&dir) {
+        self.vcs_force.insert(dir.clone());
+        self.request_dir(&dir, true);
+      }
     }
   }
 

@@ -12,9 +12,9 @@ cargo test
 
 Data flows one way: input event -> `Action` (via the keymap) -> `App` state update ->
 render. Rendering only reads state. The app never performs I/O itself; it queues
-`Command`s (list a directory, build a preview, count subdirectory items, query git, open a
-file, paste, write the clipboard) that the runtime executes in the background and answers
-with events.
+`Command`s (list a directory, build a preview, count subdirectory items, check directories
+for outside changes, query git, open a file, paste, write the clipboard) that the runtime
+executes in the background and answers with events.
 
 | Module        | Purpose                                                            |
 |---------------|--------------------------------------------------------------------|
