@@ -26,7 +26,6 @@ config warning and left unbound.
 "ge" = "shell -w $EDITOR %s"
 "gD" = "cd ~/Downloads"
 "gl" = "shell -p git log --oneline -- %f"
-"cw" = "bulk_rename"
 ```
 
 The help overlay (`?`) lists these bindings first, followed by the built-in actions. The help
@@ -108,31 +107,6 @@ fzf = { run = "shell ~/.config/tansu/fzf-jump", description = "Jump to a file wi
 
 [keys]
 "<C-f>" = "fzf"
-```
-
-### Example: bulk rename in `$EDITOR`
-
-`~/.config/tansu/bulk-rename`:
-
-```sh
-#!/bin/sh
-# Edit the selected names; each changed line renames the file on the same line.
-old=$(mktemp) new=$(mktemp)
-printf '%s\n' "$TANSU_SELECTION" | xargs -d '\n' -n1 basename > "$old"
-cp "$old" "$new"
-"${EDITOR:-vi}" "$new"
-paste -d '\n' "$old" "$new" | while IFS= read -r a && IFS= read -r b; do
-  [ "$a" = "$b" ] || mv -n -- "$TANSU_DIR/$a" "$TANSU_DIR/$b"
-done
-rm -f "$old" "$new"
-```
-
-```toml
-[commands]
-bulk_rename = "shell ~/.config/tansu/bulk-rename"
-
-[keys]
-"cw" = "bulk_rename"
 ```
 
 With Nix, the scripts can be written from the Home Manager configuration with

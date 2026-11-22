@@ -11,7 +11,7 @@ use tansu::cli::{Args, USAGE};
 use tansu::config::Config;
 use tansu::console::History;
 use tansu::event::{self, Event, InputHandle};
-use tansu::fs::meta;
+use tansu::fs::{bulk, meta};
 use tansu::graphics::ImageEncoder;
 use tansu::keymap::Keymap;
 use tansu::opener;
@@ -119,6 +119,18 @@ fn main() -> Result<()> {
             mode: ShellMode::Foreground { .. } | ShellMode::Pager,
             ..
           } => run_shell(&mut guard, &input, &mut app, cmd)?,
+          Command::BulkEdit { dir, names } => {
+            input.pause();
+            let edited = guard.suspended(|| {
+              opener::edit_text(&bulk::edit_text(&names), &dir, app.config.editor.as_deref())
+            });
+            input.resume();
+            let edited = edited?;
+            // Resizes while the editor ran were not seen.
+            let size = guard.terminal.size()?;
+            app.set_size(size.width, size.height);
+            app.on_bulk_edited(dir, names, edited);
+          }
           cmd => {
             if let Some(err) = runtime.execute(cmd) {
               app.set_error(err);

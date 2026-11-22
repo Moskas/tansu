@@ -29,6 +29,7 @@ pub enum Action {
   InvertMarks,
   UnmarkAll,
   Rename,
+  BulkRename,
   Copy,
   Cut,
   Paste,
@@ -66,7 +67,7 @@ pub enum Action {
 }
 
 impl Action {
-  pub const ALL: [Action; 66] = [
+  pub const ALL: [Action; 67] = [
     Action::MoveUp,
     Action::MoveDown,
     Action::MoveTop,
@@ -92,6 +93,7 @@ impl Action {
     Action::InvertMarks,
     Action::UnmarkAll,
     Action::Rename,
+    Action::BulkRename,
     Action::Copy,
     Action::Cut,
     Action::Paste,
@@ -163,6 +165,7 @@ impl Action {
       Action::InvertMarks => "invert_marks",
       Action::UnmarkAll => "unmark_all",
       Action::Rename => "rename",
+      Action::BulkRename => "bulk_rename",
       Action::Copy => "copy",
       Action::Cut => "cut",
       Action::Paste => "paste",
@@ -234,6 +237,7 @@ impl Action {
       Action::InvertMarks => "Invert the marks in this directory",
       Action::UnmarkAll => "Unmark everything in this directory",
       Action::Rename => "Rename the selection",
+      Action::BulkRename => "Rename the marked entries in $EDITOR",
       Action::Copy => "Copy the marked entries (or selection) into the buffer",
       Action::Cut => "Cut the marked entries (or selection) into the buffer",
       Action::Paste => "Paste the buffer here, never overwriting",

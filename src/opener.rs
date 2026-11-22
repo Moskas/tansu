@@ -282,6 +282,38 @@ fn private_file(ext: &str) -> std::io::Result<(PathBuf, File)> {
   Ok((path, file))
 }
 
+/// Lets the user edit `text` on the terminal in `editor`, else `$VISUAL`, `$EDITOR` or `vi`,
+/// and returns the edited text. The editor runs through `/bin/sh`, so a value like
+/// `nvim -u NONE` works in every user shell, and an editor that exits with an error discards
+/// the edit.
+pub fn edit_text(text: &str, cwd: &Path, editor: Option<&str>) -> Result<String, String> {
+  struct Remove(PathBuf);
+  impl Drop for Remove {
+    fn drop(&mut self) {
+      let _ = std::fs::remove_file(&self.0);
+    }
+  }
+  let (path, mut file) = private_file("txt").map_err(|e| format!("temporary file: {e}"))?;
+  let path = Remove(path);
+  file
+    .write_all(text.as_bytes())
+    .map_err(|e| format!("{}: {e}", path.0.display()))?;
+  drop(file);
+  let mut cmd = Command::new("/bin/sh");
+  cmd
+    .arg("-c")
+    .arg(r#"exec ${1:-${VISUAL:-${EDITOR:-vi}}} "$2""#)
+    .arg("sh")
+    .arg(editor.map_or("", str::trim))
+    .arg(&path.0)
+    .current_dir(cwd);
+  let status = wait_on_terminal("editor", cmd, false).map_err(|e| e.to_string())?;
+  if !status.success() {
+    return Err(format!("the editor exited with {status}"));
+  }
+  std::fs::read_to_string(&path.0).map_err(|e| format!("{}: {e}", path.0.display()))
+}
+
 /// Creates the log of a shell task (`:shell -b`).
 pub fn create_task_log() -> std::io::Result<(PathBuf, File)> {
   private_file("log")

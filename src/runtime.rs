@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::app::Command;
 use crate::clipboard::{self, Backend};
 use crate::event::Event;
+use crate::fs::bulk::{self, Rename};
 use crate::fs::ops::OnConflict;
 use crate::fs::{DirCount, Entry, PasteMode, count_entries, dir_mtime, list_dir, ops};
 use crate::graphics::ImageEncoder;
@@ -149,6 +150,12 @@ pub fn rename(from: &Path, to: &Path) -> Event {
     to: to.to_path_buf(),
     result,
   }
+}
+
+/// Renames entries of `dir` for `:bulk_rename`.
+pub fn bulk_rename(dir: PathBuf, renames: &[Rename]) -> Event {
+  let outcome = bulk::apply(&dir, renames);
+  Event::BulkRenamed { dir, outcome }
 }
 
 /// Pastes each of `sources` into `dest`, carrying on past failures and counting with
@@ -777,6 +784,11 @@ impl Runtime {
       Command::Rename { from, to } => {
         let _ = self.tx.send(rename(&from, &to));
       }
+      Command::BulkRename { dir, renames } => {
+        let _ = self.tx.send(bulk_rename(dir, &renames));
+      }
+      // Needs the terminal, so the main loop runs it.
+      Command::BulkEdit { .. } => {}
       // Taken by `file_job` above.
       Command::Paste { .. } | Command::Delete { .. } | Command::Extract { .. } => {}
       // Creating is a single fast syscall or two, like a rename.
@@ -935,9 +947,9 @@ fn read_last_line(log: &Path) -> Option<String> {
   crate::opener::last_output_line(&tail)
 }
 
-/// Runs a command to completion on the current thread. `Open`, `Spawn`, `Shell`, `ShellTask`,
-/// `ZoxideAdd` and `Clipboard` are ignored, so tests never touch the user's programs, zoxide database or
-/// clipboard.
+/// Runs a command to completion on the current thread. `Open`, `Spawn`, `BulkEdit`, `Shell`,
+/// `ShellTask`, `ZoxideAdd` and `Clipboard` are ignored, so tests never touch the user's
+/// programs, editor, zoxide database or clipboard.
 pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLimits) -> Vec<Event> {
   let token = CancelToken::never();
   let cmd = match file_job(cmd) {
@@ -965,6 +977,7 @@ pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLim
     }
     Command::VcsScan(req) => VcsScanner::default().scan(&req).into_iter().collect(),
     Command::Rename { from, to } => vec![rename(&from, &to)],
+    Command::BulkRename { dir, renames } => vec![bulk_rename(dir, &renames)],
     Command::Zoxide { keywords, exclude } => vec![zoxide_query(&keywords, &exclude)],
     Command::DetectMime(path) => vec![detect_mime(&path)],
     Command::Create { path, dir } => vec![create(&path, dir)],
@@ -975,6 +988,7 @@ pub fn execute_sync(cmd: Command, registry: &PreviewRegistry, limits: PreviewLim
     | Command::CancelJob(_)
     | Command::PauseJob(..) => Vec::new(),
     Command::Open(_)
+    | Command::BulkEdit { .. }
     | Command::Spawn { .. }
     | Command::Shell { .. }
     | Command::ShellTask { .. }

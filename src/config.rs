@@ -22,6 +22,9 @@ pub struct Config {
   pub icons: bool,
   /// Command used to open files; the path is appended as the last argument.
   pub opener: String,
+  /// Editor for `:bulk_rename`, run through `/bin/sh` with the file appended, e.g. `"nvim"`.
+  /// Unset, `$VISUAL`, then `$EDITOR`, then `vi` is used.
+  pub editor: Option<String>,
   /// Width ratios of the parent, current and preview columns. A zero hides that column.
   pub column_ratios: [u16; 3],
   /// Show git status markers next to entries (like ranger's `vcs_aware`).
@@ -166,6 +169,7 @@ impl Default for Config {
       sort: SortKey::Name,
       icons: true,
       opener: "xdg-open".to_string(),
+      editor: None,
       column_ratios: [1, 3, 4],
       vcs_aware: true,
       zoxide_add: true,

@@ -18,6 +18,7 @@ use crate::clipboard;
 use crate::config::{Config, UserCommand};
 use crate::console::{self, CompletionSource, ConsoleCommand, EditOutcome, History, LineEditor};
 use crate::event::Event;
+use crate::fs::bulk::{self, Rename};
 use crate::fs::ops::{Conflict, OnConflict, Resolution};
 use crate::fs::sort::sort_entries_by;
 use crate::fs::{DirCount, DirListing, Entry, PasteMode, SortKey};
@@ -74,6 +75,17 @@ pub enum Command {
   LoadDir(PathBuf),
   /// Report which of these directories changed since their listing, by modification time.
   CheckDirs(Vec<(PathBuf, Option<SystemTime>)>),
+  /// Let the user edit `names`, entries of `dir`, in $EDITOR on the terminal; answered with
+  /// [`App::on_bulk_edited`].
+  BulkEdit {
+    dir: PathBuf,
+    names: Vec<String>,
+  },
+  /// Rename entries of `dir`.
+  BulkRename {
+    dir: PathBuf,
+    renames: Vec<Rename>,
+  },
   Preview {
     id: u64,
     entry: Entry,
@@ -247,6 +259,8 @@ pub enum ConfirmAction {
     dest: PathBuf,
     damaged: usize,
   },
+  /// Rename entries of `dir`, as edited in $EDITOR.
+  BulkRename { dir: PathBuf, renames: Vec<Rename> },
 }
 
 impl Confirm {
@@ -283,6 +297,14 @@ impl Confirm {
           ),
         }
       }
+      ConfirmAction::BulkRename { renames, .. } => match renames.as_slice() {
+        [one] => format!(
+          "Rename `{}` to `{}`? (y/N)",
+          crate::fs::entry::sanitize(&one.from),
+          crate::fs::entry::sanitize(&one.to)
+        ),
+        many => format!("Rename {}? (y/N)", items(many.len())),
+      },
     }
   }
 
@@ -294,12 +316,16 @@ impl Confirm {
         " Delete permanently, directories with their contents "
       }
       ConfirmAction::ExtractDamaged { .. } => " Damaged: their data fails its checksum ",
+      ConfirmAction::BulkRename { .. } => " Rename ",
     }
   }
 
   /// Whether to draw the question as a warning: something is lost or broken.
   pub fn is_warning(&self) -> bool {
-    !matches!(self.action, ConfirmAction::Delete { trash: true, .. })
+    !matches!(
+      self.action,
+      ConfirmAction::Delete { trash: true, .. } | ConfirmAction::BulkRename { .. }
+    )
   }
 }
 
@@ -784,6 +810,7 @@ impl App {
       Event::Tick => self.tick(),
       Event::DirLoaded { path, result } => self.on_dir_loaded(path, result),
       Event::DirsChanged(dirs) => self.on_dirs_changed(dirs),
+      Event::BulkRenamed { dir, outcome } => self.on_bulk_renamed(dir, outcome),
       Event::PreviewReady {
         id,
         path,
@@ -2009,6 +2036,95 @@ impl App {
         self.set_info(format!("extracting the rest of {}", items(archives.len())));
         self.push_extract(archives, dest, true);
       }
+      ConfirmAction::BulkRename { dir, renames } => {
+        self.commands.push(Command::BulkRename { dir, renames });
+      }
+    }
+  }
+
+  /// `:bulk_rename`: opens the names of the marked entries (or the selected one) in
+  /// `$EDITOR`, one per line.
+  fn bulk_rename(&mut self) {
+    let paths: Vec<PathBuf> = self.selection().iter().map(|e| e.path.clone()).collect();
+    if paths.is_empty() {
+      self.set_error("nothing selected");
+      return;
+    }
+    let mut names = Vec::with_capacity(paths.len());
+    for path in &paths {
+      // The editor sees lines of text: other names cannot be written back unchanged.
+      match path.file_name().and_then(|n| n.to_str()) {
+        Some(name) if !name.contains('\n') => names.push(name.to_string()),
+        _ => {
+          self.set_error(format!(
+            "bulk rename: cannot edit the name `{}`",
+            display_name(path)
+          ));
+          return;
+        }
+      }
+    }
+    let dir = self.cwd.clone();
+    self.commands.push(Command::BulkEdit { dir, names });
+  }
+
+  /// The names given to [`Command::BulkEdit`] (`old`) came back from the editor as `edited`:
+  /// asks to rename the entries whose name changed.
+  pub fn on_bulk_edited(&mut self, dir: PathBuf, old: Vec<String>, edited: Result<String, String>) {
+    let renames = edited.and_then(|text| bulk::parse_edit(&old, &text));
+    match renames {
+      Err(e) => self.set_error(format!("bulk rename: {e}; nothing renamed")),
+      Ok(renames) if renames.is_empty() => self.set_info("no names changed"),
+      Ok(renames) => {
+        let names = renames
+          .iter()
+          .map(|r| {
+            let (from, to) = (&r.from, &r.to);
+            crate::fs::entry::sanitize(&format!("{from} -> {to}"))
+          })
+          .collect();
+        self.confirm = Some(Confirm {
+          action: ConfirmAction::BulkRename { dir, renames },
+          names,
+        });
+      }
+    }
+  }
+
+  fn on_bulk_renamed(&mut self, dir: PathBuf, outcome: bulk::Outcome) {
+    let selected = self.selected().map(|e| e.path.clone());
+    for (from, to) in &outcome.renamed {
+      // Listings under a renamed directory are stale.
+      self.dirs.retain(|p, _| !p.starts_with(from));
+      self.counts.retain(|p, _| !p.starts_with(from));
+      self.preview_cache.remove(from);
+      if self.marked.remove(from) {
+        self.marked.insert(to.clone());
+      }
+      if selected.as_ref() == Some(from)
+        && let Some(name) = to.file_name()
+      {
+        let name = crate::fs::entry::sanitize(&name.to_string_lossy());
+        self.remembered.insert(dir.clone(), name.clone());
+        self.select_after_load = Some((dir.clone(), name));
+      }
+    }
+    let done = items(outcome.renamed.len());
+    match outcome.errors.as_slice() {
+      [] => self.set_info(format!("renamed {done}")),
+      [first, rest @ ..] => {
+        let more = if rest.is_empty() {
+          String::new()
+        } else {
+          format!(" (+{} more)", rest.len())
+        };
+        let first = crate::fs::entry::sanitize(first);
+        self.set_error(format!("renamed {done}, failed: {first}{more}"));
+      }
+    }
+    if !outcome.renamed.is_empty() {
+      self.vcs_force.insert(dir.clone());
+      self.request_dir(&dir, true);
     }
   }
 
@@ -2576,6 +2692,7 @@ impl App {
         self.marked.retain(|p| p.parent() != Some(cwd.as_path()));
       }
       Action::Rename => self.prompt_rename(),
+      Action::BulkRename => self.bulk_rename(),
       Action::Copy => self.fill_buffer(PasteMode::Copy),
       Action::Cut => self.fill_buffer(PasteMode::Move),
       Action::Paste => self.paste(false),

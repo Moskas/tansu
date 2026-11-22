@@ -1,6 +1,7 @@
 //! Filesystem model: entries, listing, sorting, metadata formatting and file operations.
 //! Free of UI types so it can be unit-tested directly.
 
+pub mod bulk;
 pub mod entry;
 pub mod listing;
 pub mod meta;

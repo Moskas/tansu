@@ -20,6 +20,10 @@ icons = true
 # The selected file path is appended as the last argument.
 opener = "xdg-open"
 
+# Editor for :bulk_rename, with arguments if needed. Unset, $VISUAL, then $EDITOR, then vi
+# is used.
+# editor = "nvim"
+
 # Width ratios for parent : current : preview. 0 hides the parent or preview column.
 column_ratios = [1, 3, 4]
 

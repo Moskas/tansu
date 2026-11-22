@@ -3437,3 +3437,90 @@ fn unchanged_directories_are_not_listed_again() {
     assert!(execute_sync(cmd, &PreviewRegistry::with_defaults(), app.config.preview).is_empty());
   }
 }
+
+/// Answers a bulk rename of the selection as if the editor had returned `edited`.
+fn bulk_edit(app: &mut App, edited: &str) {
+  app.dispatch(tansu::action::Action::BulkRename);
+  let cmds = app.take_commands();
+  let [Command::BulkEdit { dir, names }] = cmds.as_slice() else {
+    panic!("expected an editor, got {cmds:?}");
+  };
+  app.on_bulk_edited(dir.clone(), names.clone(), Ok(edited.to_string()));
+}
+
+#[test]
+fn bulk_rename_renames_marked_entries_after_confirmation() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj<Space><Space>");
+  bulk_edit(&mut app, "two.txt\nfile10.txt\n");
+  let confirm = app.confirm.clone().expect("asks before renaming");
+  assert_eq!(confirm.names, vec!["file2.txt -> two.txt"]);
+  assert_eq!(confirm.question(), "Rename `file2.txt` to `two.txt`? (y/N)");
+  press(&mut app, "y");
+  assert!(work.join("two.txt").exists());
+  assert!(!work.join("file2.txt").exists());
+  assert!(names(&app).contains(&"two.txt".to_string()));
+  assert!(
+    app.is_marked(&work.join("two.txt")),
+    "the mark follows the rename"
+  );
+  assert!(app.is_marked(&work.join("file10.txt")));
+}
+
+#[test]
+fn bulk_rename_swaps_names() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj<Space><Space>");
+  bulk_edit(&mut app, "file10.txt\nfile2.txt\n");
+  press(&mut app, "y");
+  assert_eq!(
+    fs::read_to_string(work.join("file10.txt")).unwrap(),
+    "two\n"
+  );
+  assert_eq!(
+    fs::read_to_string(work.join("file2.txt")).unwrap(),
+    "hello\n\tworld\n"
+  );
+  let leftovers: Vec<_> = fs::read_dir(&work)
+    .unwrap()
+    .filter_map(|e| e.ok())
+    .filter(|e| e.file_name().to_string_lossy().starts_with(".tansu-rename"))
+    .collect();
+  assert!(leftovers.is_empty());
+}
+
+#[test]
+fn bulk_rename_refuses_to_replace_an_entry() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj<Space><Space>");
+  bulk_edit(&mut app, "blob.bin\nnew.txt\n");
+  press(&mut app, "y");
+  assert_eq!(
+    fs::read(work.join("blob.bin")).unwrap(),
+    [0u8, 159, 146, 150, 0, 1, 2]
+  );
+  assert!(work.join("file2.txt").exists(), "nothing is renamed");
+  assert!(work.join("file10.txt").exists());
+  let message = app.message.as_ref().unwrap().text.clone();
+  assert!(message.contains("`blob.bin` already exists"), "{message}");
+}
+
+#[test]
+fn bulk_rename_reports_bad_edits_and_unchanged_names() {
+  let (_tmp, work) = fixture();
+  let mut app = new_app(&work);
+  press(&mut app, "jjj");
+  bulk_edit(&mut app, "");
+  assert!(app.confirm.is_none());
+  let message = app.message.as_ref().unwrap().text.clone();
+  assert_eq!(
+    message,
+    "bulk rename: expected 1 line, got 0 lines; nothing renamed"
+  );
+  bulk_edit(&mut app, "file2.txt\n");
+  assert!(app.confirm.is_none());
+  assert_eq!(app.message.as_ref().unwrap().text, "no names changed");
+}

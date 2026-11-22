@@ -561,6 +561,7 @@ fn parse_words<'a>(
   let action = match name {
     "q" => Action::Quit,
     "qa" | "quitall" => Action::QuitAll,
+    "bulkrename" => Action::BulkRename,
     TAB_OPEN => {
       let n = args.next().unwrap_or_default();
       match n.parse::<u8>() {

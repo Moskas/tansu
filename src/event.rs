@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crossterm::event::{self as ct, KeyEvent, MouseEvent, MouseEventKind};
 
+use crate::fs::bulk::Outcome;
 use crate::fs::ops::Conflict;
 use crate::fs::{DirCount, DirListing, PasteMode};
 use crate::graphics::EncodedImage;
@@ -26,6 +27,11 @@ pub enum Event {
   Tick,
   /// These directories changed since they were listed.
   DirsChanged(Vec<PathBuf>),
+  /// Result of renaming entries of `dir` with `:bulk_rename`.
+  BulkRenamed {
+    dir: PathBuf,
+    outcome: Outcome,
+  },
   DirLoaded {
     path: PathBuf,
     result: Result<DirListing, String>,

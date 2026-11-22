@@ -20,6 +20,7 @@ for the session only. Lines run from key bindings and scripts are not recorded.
 | `open_with -d <program> [args...]` | Run the program on the selection, detached           |
 | `rename <new name>`                | Rename the selection within its directory            |
 | `rename`                           | Open the command line as `rename <selected name>`    |
+| `bulk_rename`, `bulkrename`        | Rename the marked entries in `$EDITOR`               |
 | `shell [-flags] <command>`         | Run a command line through the shell                 |
 | `shell`                            | Open the command line as `shell `                    |
 | `search <pattern>`                 | Select the best match in the current directory       |
@@ -44,6 +45,9 @@ instead of entering it.
 `rename` takes the rest of the line as the new name, so names may contain spaces. It refuses
 to replace an existing entry, and the renamed entry stays selected. `r` opens the command line
 as `rename <selected name>`.
+
+`bulk_rename` renames the marked entries (or the selected one) by editing their names in
+`$VISUAL` or `$EDITOR`; see [Bulk rename](file-operations.md#bulk-rename).
 
 `search` matches the names of the visible entries in the current directory. `/` opens the
 command line as `search `, like `/` in vim and ranger, and `n` / `N` step through the matches,

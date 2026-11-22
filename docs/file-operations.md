@@ -96,6 +96,18 @@ is refused, and `dD` has to be used instead.
 created, as in ranger. An existing entry is never
 replaced. The new entry (or the directory leading to it) is selected afterwards.
 
+## Bulk rename
+
+`:bulk_rename` (or `:bulkrename`, as in ranger) opens the names of the marked entries, or of
+the selected one, one per line, in the `editor` setting, else `$VISUAL`, else `$EDITOR`,
+else `vi`. Each changed line renames the entry on the same line; then the status bar asks to
+confirm and a list above it shows every `old -> new`. Nothing is renamed when the editor
+exits with an error, the number of lines changed, or a new name is empty, contains `/` or is
+given twice. Names can be swapped or rotated (`a` -> `b`, `b` -> `a`): those go through
+temporary names. An existing entry is never replaced; when a new name is taken, nothing is
+renamed. Marks and the cursor follow the renamed entries. It has no default key; bind one in
+`[keys]`, e.g. `"cw" = "bulk_rename"`.
+
 ## Extracting archives
 
 `x` (or `:extract`) extracts the selected archive, or every marked archive, into the

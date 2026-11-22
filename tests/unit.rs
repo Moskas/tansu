@@ -7,6 +7,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use tansu::action::Action;
 use tansu::config::Config;
 use tansu::console::{ConsoleCommand, ConsoleError, EditOutcome, LineEditor, parse};
+use tansu::fs::bulk::{Rename, edit_text, parse_edit};
 use tansu::fs::meta::{format_permissions, human_size, human_size_compact};
 use tansu::fs::sort::natural_cmp;
 use tansu::keymap::{Binding, Key, KeyParseError, KeyResult, Keymap, parse_sequence};
@@ -407,9 +408,12 @@ fn custom_command_arguments_expand_in_place_of_percent_a() {
 
 #[test]
 fn every_action_has_a_default_binding_and_round_trips_by_name() {
+  // Left for the user to bind, like ranger's `:bulkrename`.
+  const UNBOUND: &[Action] = &[Action::BulkRename];
   let km = Keymap::default();
   for a in Action::ALL {
-    assert!(!km.keys_for(a).is_empty(), "{a} unbound");
+    let bound = !km.keys_for(a).is_empty();
+    assert_eq!(bound, !UNBOUND.contains(&a), "{a} bound: {bound}");
     assert_eq!(a.name().parse::<Action>().unwrap(), a);
   }
 }
@@ -2164,4 +2168,50 @@ fn command_history_steps_through_matching_lines_and_back_to_the_draft() {
   h.push("cd 5");
   assert_eq!(h.entries().last().map(String::as_str), Some("cd 5"));
   assert_eq!(h.entries().len(), HISTORY_SIZE);
+}
+
+// ---- bulk rename ----
+
+fn strings(names: &[&str]) -> Vec<String> {
+  names.iter().map(|n| n.to_string()).collect()
+}
+
+fn rename(from: &str, to: &str) -> Rename {
+  Rename {
+    from: from.to_string(),
+    to: to.to_string(),
+  }
+}
+
+#[test]
+fn bulk_edit_keeps_only_changed_names() {
+  let old = strings(&["a.txt", "b.txt", "c.txt"]);
+  assert_eq!(edit_text(&old), "a.txt\nb.txt\nc.txt\n");
+  let renames = parse_edit(&old, "a.txt\nB.md\nc.txt\n\n\n").unwrap();
+  assert_eq!(renames, vec![rename("b.txt", "B.md")]);
+  assert_eq!(parse_edit(&old, &edit_text(&old)).unwrap(), vec![]);
+}
+
+#[test]
+fn bulk_edit_rejects_bad_names() {
+  let old = strings(&["a", "b"]);
+  assert_eq!(
+    parse_edit(&old, "a\n").unwrap_err(),
+    "expected 2 lines, got 1 line"
+  );
+  assert_eq!(
+    parse_edit(&old, "a\nb\nc\n").unwrap_err(),
+    "expected 2 lines, got 3 lines"
+  );
+  assert_eq!(
+    parse_edit(&old, "a\n\nb\n").unwrap_err(),
+    "expected 2 lines, got 3 lines"
+  );
+  assert_eq!(parse_edit(&old, "\nb\n").unwrap_err(), "line 1 is empty");
+  assert!(parse_edit(&old, "a\nx/y\n").is_err());
+  assert!(parse_edit(&old, "a\n..\n").is_err());
+  assert_eq!(
+    parse_edit(&old, "c\nc\n").unwrap_err(),
+    "`c` is given twice"
+  );
 }
